@@ -70,6 +70,8 @@ def main(argv=None) -> int:
                     help="边缘布局版本，1=冻结旧印版，2=当前默认")
     ap.add_argument("--inner-layout", type=int, choices=(2, 3), default=3,
                     help="内孔版式，3=交织+CRC-7（默认，新印版），2=旧印版")
+    ap.add_argument("--inner-depth", type=float, default=None,
+                    help="内孔径向调制深度 px，默认取 arrow_inner.DEPTH（当前 10.0）")
     ap.add_argument("--no-check", action="store_true", help="跳过生成后的自检解码")
     args = ap.parse_args(argv)
 
@@ -89,7 +91,9 @@ def main(argv=None) -> int:
     dec = {"edge": AD.Decoder(carrier="edge", design=design)}
     if "inner" in carriers:
         import arrow_inner as I
-        emb["inner"] = I.InnerCarrier(design, layout_version=args.inner_layout)
+        inner_depth = I.DEPTH if args.inner_depth is None else float(args.inner_depth)
+        emb["inner"] = I.InnerCarrier(design, layout_version=args.inner_layout,
+                                      depth=inner_depth)
         dec["inner"] = AD.Decoder(carrier="inner", design=design,
                                   layout_version=args.inner_layout)
 

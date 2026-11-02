@@ -1481,6 +1481,10 @@ class CeramicCamSimulator:
                --(c 釉面高光 + 渐变阴影)--> 辐照度
                --(d 微距失焦 + 运动模糊)--> 光学模糊
                --(e 传感器噪声 + JPEG)--> 最终 JPG
+
+    ``stress=True`` 再叠加四层单应/均匀扩散建模不了的真实退化：
+    空间不均匀的油墨晕染、1200 dpi 网点重采样、镜头桶形畸变、
+    陶瓷面非平面低频位移。
     """
 
     def __init__(self, scene_w: int = 2800, scene_h: int = 1700,
@@ -1547,9 +1551,87 @@ class CeramicCamSimulator:
         s = k.sum()
         return k / s if s > 0 else np.ones((1, 1), np.float32) / 1.0
 
+    # ---------- 压力模式：晕染 / 网点 / 镜头畸变 / 非平面 ----------
+    @staticmethod
+    def _ink_bleed(plate: np.ndarray, rng: np.random.Generator,
+                   strength: float = 1.0) -> np.ndarray:
+        """空间不均匀的油墨晕染。
+
+        ｜低频场调制扩散半径（有的地方扩 1 px、有的地方扩 3 px）
+        ｜+ 方向性渗墨（沿一个随机方向更强）
+        ｜+ 颗粒抖动，制造不规则边缘。
+        与主流程的统一 dilate/blur 不同，这里会破坏"半高宽"的共模假设。
+        """
+        ink = np.clip((BG_LEVEL - plate.astype(np.float32)) /
+                      float(BG_LEVEL - INK_LEVEL), 0.0, 1.0)
+        h, w = ink.shape
+        low = rng.normal(0, 1, (h // 40 + 2, w // 40 + 2)).astype(np.float32)
+        field = cv2.resize(low, (w, h), interpolation=cv2.INTER_CUBIC)
+        field = cv2.GaussianBlur(field, (0, 0), 25)
+        field = (field - field.min()) / (float(np.ptp(field)) + 1e-6)
+        r1 = max(1, int(round(1.2 * strength)))
+        r2 = max(1, int(round(2.6 * strength)))
+        k1 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r1 + 1, 2 * r1 + 1))
+        k2 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r2 + 1, 2 * r2 + 1))
+        grown = cv2.dilate(ink, k1) * (1.0 - field) + cv2.dilate(ink, k2) * field
+        ang = float(rng.uniform(0, math.pi))
+        s1, s2 = 0.9 * strength, 0.25 * strength
+        L = int(6 * max(s1, s2)) | 1
+        yy, xx = np.mgrid[-L:L + 1, -L:L + 1].astype(np.float32)
+        xr = xx * math.cos(ang) + yy * math.sin(ang)
+        yr = -xx * math.sin(ang) + yy * math.cos(ang)
+        ker = np.exp(-(xr ** 2 / (2 * s1 * s1) + yr ** 2 / (2 * s2 * s2))).astype(np.float32)
+        ker /= float(ker.sum())
+        grown = cv2.filter2D(grown, -1, ker)
+        jitter = cv2.GaussianBlur(rng.normal(0, 0.06, (h, w)).astype(np.float32), (0, 0), 1.2)
+        grown = np.clip(grown + jitter, 0.0, 1.0)
+        out = BG_LEVEL - grown * float(BG_LEVEL - INK_LEVEL)
+        return np.clip(out, 0, 255).astype(np.uint8)
+
+    @staticmethod
+    def _halftone(plate: np.ndarray, dpi: int = 1200) -> np.ndarray:
+        """按 1200 dpi 制版分辨率往返重采样，模拟网点与分辨率损失。"""
+        w2 = int(round(CANVAS_W * dpi / 2540.0))
+        h2 = int(round(CANVAS_H * dpi / 2540.0))
+        small = cv2.resize(plate, (max(2, w2), max(2, h2)),
+                           interpolation=cv2.INTER_AREA)
+        small = cv2.GaussianBlur(small, (0, 0), 0.5)
+        return cv2.resize(small, (CANVAS_W, CANVAS_H), interpolation=cv2.INTER_LINEAR)
+
+    @staticmethod
+    def _radial_distortion(img: np.ndarray, k1: float = -0.08) -> np.ndarray:
+        """手机镜头的桶形畸变（单应无法建模）。"""
+        h, w = img.shape
+        cx, cy = w * 0.5, h * 0.5
+        f = float(max(w, h))
+        yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+        dx = (xx - cx) / f
+        dy = (yy - cy) / f
+        r2 = dx * dx + dy * dy
+        s = 1.0 + k1 * r2
+        return cv2.remap(img, cx + dx * s * f, cy + dy * s * f, cv2.INTER_LINEAR,
+                         borderMode=cv2.BORDER_REPLICATE)
+
+    @staticmethod
+    def _surface_warp(img: np.ndarray, amp: float, rng: np.random.Generator) -> np.ndarray:
+        """陶瓷面不平整造成的低频位移场（非平面残差）。"""
+        h, w = img.shape
+
+        def fld():
+            low = rng.normal(0, 1, (h // 60 + 2, w // 60 + 2)).astype(np.float32)
+            f = cv2.resize(low, (w, h))
+            f = cv2.GaussianBlur(f, (0, 0), 30)
+            return f / (float(np.abs(f).max()) + 1e-6)
+
+        dx, dy = fld(), fld()
+        yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+        return cv2.remap(img, xx + dx * amp, yy + dy * amp, cv2.INTER_LINEAR,
+                         borderMode=cv2.BORDER_REPLICATE)
+
     # ---------- 主入口 ----------
     def simulate(self, plate: np.ndarray, level: str = "moderate",
-                 rng: Optional[np.random.Generator] = None) -> Dict:
+                 rng: Optional[np.random.Generator] = None,
+                 stress: bool = False) -> Dict:
         if level not in LEVELS:
             raise ValueError(f"未知扰动等级 {level}")
         rng = rng or np.random.default_rng(self.seed)
@@ -1573,6 +1655,10 @@ class CeramicCamSimulator:
         jpeg_q = U("jpeg", True)
         shade = U("shade")
         m_ang = rng.uniform(0, 180)
+
+        # 压力模式：先把晕染/网点作用在印版上，再走常规拍摄链路。
+        if stress:
+            plate = self._halftone(self._ink_bleed(plate, rng))
 
         # ---------- (a) 油墨扩散 / 烧制形变 ----------
         cov = (BG_LEVEL - plate.astype(np.float32)) / float(BG_LEVEL - INK_LEVEL)
@@ -1617,6 +1703,10 @@ class CeramicCamSimulator:
         img = cv2.warpPerspective(bg, Hm, (self.out_w, self.out_h),
                                   flags=cv2.INTER_LINEAR,
                                   borderMode=cv2.BORDER_REPLICATE)
+
+        # 压力模式：镜头桶形畸变 + 陶瓷面非平面位移，单应无法建模。
+        if stress:
+            img = self._surface_warp(self._radial_distortion(img), 3.0, rng)
 
         # ---------- (c) 釉面高光 + 环境光渐变 ----------
         h, w = img.shape

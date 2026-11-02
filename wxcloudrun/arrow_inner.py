@@ -18,14 +18,16 @@ import numpy as np
 
 import arrow_wm as A
 
-DEPTH: float = 6.0          # 内孔边界径向峰值位移（px @ 底版尺度，约 0.060 mm）
-# 早期取 2.2（n=20 的小样本实验），实测发现极限档明显偏弱。改为 6.0：
-#   · 边界起伏 ±0.060 mm，2.2 cm 实物下仍低于人眼分辨极限（≈0.1 mm）；
-#   · 打印 1200 dpi 时幅度 = 2.84 个墨点，远高于实测下限（每码元 ≥7 点）；
-#   · 外轮廓仍逐像素不变（孔边界 ±6 px 之外灰度差恒为 0）。
-# 对照数据见 docs/技术报告.md 10.6。
+DEPTH: float = 10.0         # 内孔边界径向峰值位移（px @ 底版尺度，约 0.100 mm）
+# 深度对照（v3，同批载荷/扰动）：
+#   6.0 px：extreme 正常 6/12、BER 4.55%；A 三角局部模糊 5/12
+#   8.0 px：extreme 正常 8/12、BER 3.25%；模糊 5/12
+#  10.0 px：extreme 正常 8/12、BER 2.60%；模糊 7/12
+# 代价是起伏 ±0.100 mm，正好在人眼于 2.2 cm 实物的分辨极限附近：
+# 正常观看不明显，凑近细看能看出边界微波。打印 1200 dpi 时 = 4.7 个墨点。
 N_THETA: int = 1440         # 每个内孔的圆周采样数
-SCAN_HALF: float = 10.0     # 半径搜索半宽（px）
+SCAN_HALF: float = 14.0     # 半径搜索半宽（px）：覆盖 ±DEPTH 再留 4 px 余量；
+                            # 最小孔半径 37 px，窗口不会越过孔心
 SCAN_STEP: float = 0.25     # 半径搜索步长（px）
 
 # ---- 版式 ----------------------------------------------------------------
@@ -540,13 +542,15 @@ class InnerDecoder:
 # 3. 命令行：压测 / 导出印版 / 解码实拍
 # ==============================================================================
 def run_bench(carrier: InnerCarrier, n: int = 20, seed: int = 6000,
-              levels=("clean", "light", "moderate", "heavy", "extreme")) -> None:
+              levels=("clean", "light", "moderate", "heavy", "extreme"),
+              stress: bool = False) -> None:
     dec = InnerDecoder(carrier)
     sim = A.CeramicCamSimulator()
     import arrow_decode as AD
     print("=" * 88)
     print(f"  内孔载体压测（生产门）  layout=v{carrier.layout_version}  "
-          f"{carrier.n_cells} 码元  depth={carrier.depth:g}px  每组 {n} 样本")
+          f"{carrier.n_cells} 码元  depth={carrier.depth:g}px  "
+          f"{'压力模式  ' if stress else ''}每组 {n} 样本")
     print("=" * 88)
     print(f"| {'档位':<12} | {'研究正确':>8} | {'接受且对':>8} | {'接受且错':>8} | "
           f"{'BER':>8} | {'耗时':>7} |")
@@ -561,7 +565,8 @@ def run_bench(carrier: InnerCarrier, n: int = 20, seed: int = 6000,
             dg = "1%010d" % ((sd + seed) * 7919 % 10 ** 10)
             wm = carrier.embed(dg)
             tb = np.array(wm["bits"])
-            cam = sim.simulate(wm["plate"], lv, np.random.default_rng(seed + sd))
+            cam = sim.simulate(wm["plate"], lv, np.random.default_rng(seed + sd),
+                               stress=stress)
             t0 = __import__("time").time()
             r = dec.decode(cam["image"])
             ts.append(__import__("time").time() - t0)
@@ -604,6 +609,8 @@ def main(argv=None) -> int:
     import os as _os
     ap = argparse.ArgumentParser(description="ARROW 内孔载体隐形水印")
     ap.add_argument("--bench", action="store_true", help="跑扰动压测")
+    ap.add_argument("--stress", action="store_true",
+                    help="压测时叠加晕染/网点/镜头畸变/非平面（更接近实物）")
     ap.add_argument("-n", type=int, default=20, help="每档样本数")
     ap.add_argument("--seed", type=int, default=6000)
     ap.add_argument("--depth", type=float, default=DEPTH, help="径向峰值位移 (px)")
@@ -619,7 +626,7 @@ def main(argv=None) -> int:
     carrier = InnerCarrier(depth=args.depth, verbose=True,
                            layout_version=make_layout)
     if args.bench:
-        run_bench(carrier, n=args.n, seed=args.seed)
+        run_bench(carrier, n=args.n, seed=args.seed, stress=args.stress)
     if args.export:
         export_plates(carrier, args.export)
     if args.decode:
