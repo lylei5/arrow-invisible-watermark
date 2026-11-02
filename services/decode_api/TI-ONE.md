@@ -98,7 +98,7 @@ curl -s -F "image=@samples/edge/ARROW_13800138000.png" \
 | `POST /decode` 的可选共享密钥 | 该服务的环境变量 `DECODE_TOKEN` | 请求头 `X-Decode-Token`。未设置则不启用 |
 | 号码能不能信 | `arrow_decode` 的接受门 | 只认 `accepted===true` / `status==="accepted"`。HTTP 200 且 `status=rejected` 是一次正常的拒绝，不是网关故障。400/401/413 的 `status=error` 才是请求错误 |
 
-控制台自带的「在线测试」偏向 JSON 请求体，不适合 multipart 图片。用上面的 `curl -F` 或小程序 `wx.uploadFile`（`name` 填 `image`）来验。
+控制台自带的「在线测试」偏向 JSON 请求体，不适合 multipart 图片。用上面的 `curl -F` 或小程序 `wx.uploadFile`（`name` 填 `image`）来验。响应会回显 `input_sha256`（服务端实际收到的字节哈希），小程序直连分支用它核对原图是否完整送达。
 
 ## 明确不要做的事
 

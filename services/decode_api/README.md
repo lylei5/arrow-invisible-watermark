@@ -2,7 +2,9 @@
 
 把仓库根目录的 `arrow_decode.Decoder` 包成一个小 HTTP 服务，给微信小程序和腾讯云 TI-ONE 在线服务用。算法不在这里改：默认载体是内孔（`inner`），旧边缘印版用显式 `edge`。
 
-内孔默认 `layout=auto`：先解 v3（交织 + CRC-7），CRC 不通过再解 v2 旧印版。客户端不需要加参数，已印出的旧版照常可解；两版共用同一次配准。
+`wx.cloud.callContainer` 的请求体约 100KB 就报 -606001，传不了原图；需要原图时改用 `wx.uploadFile` 直连服务的 HTTPS 域名（multipart，字段 `image`，服务端上限 20MB / 4000 万像素），响应里的 `input_sha256` 用来核对收到的字节。
+
+内孔默认版式由 `DECODE_INNER_LAYOUT` 决定，默认 **3**（v3，交织 + CRC-7），客户端不需要加参数。旧 v2 印版需要显式 `?layout=2`；过渡期可把环境变量设成 `auto`（先 v3 再回退 v2），但低尺度下 auto 存在把 v3 读成 v2 错号的风险，不建议在生产开启。
 
 契约见 [docs/miniprogram-integration.md](../../docs/miniprogram-integration.md)。TI-ONE 上怎么挂、以及不要动其他已有服务，见 [TI-ONE.md](TI-ONE.md)。微信云托管（服务名 `arrow-decode`、GitHub 构建、`callContainer`）见 [docs/wechat-cloudrun.md](../../docs/wechat-cloudrun.md)。
 

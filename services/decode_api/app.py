@@ -13,6 +13,7 @@ multipart, and also accepts JSON ``image_base64`` or a raw image body so
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 import re
@@ -39,6 +40,10 @@ if _ROOT not in sys.path:
 import arrow_decode as AD
 
 REPO_ROOT = _ROOT
+
+# 内孔只有一种版式：v4（NRZ，77 码元，每码元 0.328 mm）。旧 v2/v3 印版已停产，
+# 服务端不再支持多版式共存，也不读任何版式环境变量——少一个能配错的地方。
+INNER_LAYOUT = 4
 
 # Preferred multipart field, then common client aliases. Any other file part
 # is still accepted so a renamed form field does not 400.
@@ -127,23 +132,15 @@ def _warmup_carriers() -> list[str]:
     return [AD.DEFAULT_CARRIER, "edge"]
 
 
-def normalize_layout(raw: Optional[str]) -> str:
-    """Edge layout selector. Blank means v2. ``auto`` tries v2, then v1."""
-    text = "2" if raw is None or str(raw).strip() == "" else str(raw).strip().lower()
-    if text not in ("1", "2", "auto"):
-        raise HTTPException(
-            status_code=400, detail="layout must be 1, 2, or auto")
-    return text
-
-
-def get_decoder(carrier: str, layout: str = "2") -> AD.Decoder:
+def get_decoder(carrier: str) -> AD.Decoder:
     """Return the cached session for ``carrier``, building it on first use.
 
-    ``layout`` is the edge layout version (``"1"`` or ``"2"``). Inner ignores it.
+    Inner always uses the v4 NRZ format; edge keeps its own legacy decoder.
+    There is no layout selector any more.
     """
     if carrier not in AD.CARRIERS:
         raise ValueError(f"carrier must be one of {AD.CARRIERS}, got {carrier!r}")
-    version = int(layout) if carrier == "edge" else None
+    version = None if carrier == "edge" else INNER_LAYOUT
     key = (carrier, version)
     with _lock:
         session = _sessions.get(key)
@@ -153,23 +150,14 @@ def get_decoder(carrier: str, layout: str = "2") -> AD.Decoder:
         return session
 
 
-def decode_image(carrier: str, gray: np.ndarray, layout: str = "2") -> AD.DecodeResult:
+def decode_image(carrier: str, gray: np.ndarray) -> AD.DecodeResult:
     """Run one production decode under the process-wide lock.
 
-    ``layout="auto"`` on the edge carrier tries v2, then the frozen v1 plate
-    (depth 1.8). The first accept wins; otherwise the higher-margin reject.
+    Inner plates are always the v4 NRZ format. Edge keeps its own legacy
+    decoder — there is no layout selector any more.
     """
     with _lock:
-        if carrier == "edge" and layout == "auto":
-            first = get_decoder(carrier, "2").decode(gray)
-            if first.accepted:
-                return first
-            second = get_decoder(carrier, "1").decode(gray)
-            if second.accepted or second.margin > first.margin:
-                return second
-            return first
-        used = layout if carrier == "edge" else "2"
-        return get_decoder(carrier, used).decode(gray)
+        return get_decoder(carrier).decode(gray)
 
 
 def candidate_debug_allowed(debug: bool) -> bool:
@@ -184,7 +172,8 @@ def candidate_debug_allowed(debug: bool) -> bool:
 
 
 def result_payload(result: AD.DecodeResult, *,
-                   include_candidate: bool = False) -> dict:
+                   include_candidate: bool = False,
+                   input_sha256: Optional[str] = None) -> dict:
     """``DecodeResult.public_dict()`` plus Chinese ``reason_text``.
 
     ``candidate_digits`` is removed unless ``include_candidate``. Clients
@@ -194,6 +183,8 @@ def result_payload(result: AD.DecodeResult, *,
     """
     body = result.public_dict()
     body["reason_text"] = AD.reason_text(result.reason)
+    # wx.uploadFile 直连分支会用这个字段核对"服务端收到的就是客户端发的"。
+    body["input_sha256"] = input_sha256
     if not include_candidate:
         body.pop("candidate_digits", None)
     return body
@@ -302,27 +293,26 @@ def declared_length(request: Request) -> Optional[int]:
 
 
 async def finish_decode(carrier: str, data: bytes, *,
-                        include_candidate: bool = False,
-                        layout: str = "2"):
+                        include_candidate: bool = False):
     """Shared tail for every ``POST /decode`` body shape."""
     if not data:
         raise HTTPException(status_code=400, detail="empty image")
     ensure_upload_size(len(data))
     gray = bytes_to_gray(data)
     try:
-        result = await run_in_threadpool(decode_image, carrier, gray, layout)
+        result = await run_in_threadpool(decode_image, carrier, gray)
     except HTTPException:
         raise
     except Exception:
         return UTF8JSONResponse(
             {"status": "error", "detail": "decode error"}, status_code=500)
     return UTF8JSONResponse(
-        result_payload(result, include_candidate=include_candidate))
+        result_payload(result, include_candidate=include_candidate,
+                       input_sha256=hashlib.sha256(data).hexdigest()))
 
 
 async def decode_json_body(request: Request, query_carrier: Optional[str], *,
-                           include_candidate: bool = False,
-                           query_layout: Optional[str] = None):
+                           include_candidate: bool = False):
     """``{"image_base64": "...", "carrier": "inner"}``. Query carrier wins."""
     length = declared_length(request)
     if length is not None and length > _BASE64_CHAR_CAP + 4096:
@@ -338,24 +328,17 @@ async def decode_json_body(request: Request, query_carrier: Optional[str], *,
         if payload.get("carrier") is not None:
             raw_carrier = payload.get("carrier")
     chosen = carrier_from_value(None if raw_carrier is None else str(raw_carrier))
-    raw_layout = query_layout
-    if raw_layout is None or str(raw_layout).strip() == "":
-        if payload.get("layout") is not None:
-            raw_layout = payload.get("layout")
-    layout = normalize_layout(None if raw_layout is None else str(raw_layout))
     image = payload.get("image_base64")
     if not isinstance(image, str):
         image = payload.get("image")
     if not isinstance(image, str) or not image.strip():
         raise HTTPException(status_code=400, detail="missing image_base64")
     return await finish_decode(
-        chosen, decode_base64_image(image), include_candidate=include_candidate,
-        layout=layout)
+        chosen, decode_base64_image(image), include_candidate=include_candidate)
 
 
 async def decode_raw_body(request: Request, query_carrier: Optional[str], *,
-                          include_candidate: bool = False,
-                          query_layout: Optional[str] = None):
+                          include_candidate: bool = False):
     """Raw image bytes. ``carrier`` is the query param (default ``inner``)."""
     length = declared_length(request)
     if length is not None and length > MAX_IMAGE_BYTES:
@@ -363,8 +346,7 @@ async def decode_raw_body(request: Request, query_carrier: Optional[str], *,
     data = await request.body()
     return await finish_decode(
         carrier_from_value(query_carrier), data,
-        include_candidate=include_candidate,
-        layout=normalize_layout(query_layout))
+        include_candidate=include_candidate)
 
 
 def select_upload(form) -> Optional[UploadFile]:
@@ -413,7 +395,6 @@ def health():
 async def decode_endpoint(
     request: Request,
     carrier: Optional[str] = Query(default=None),
-    layout: Optional[str] = Query(default=None),
     debug: bool = Query(default=False),
     x_decode_token: Optional[str] = Header(default=None, alias="X-Decode-Token"),
 ):
@@ -422,12 +403,10 @@ async def decode_endpoint(
     kind = media_type(request.headers.get("content-type", ""))
     if kind == "application/json":
         return await decode_json_body(
-            request, carrier, include_candidate=include_candidate,
-            query_layout=layout)
+            request, carrier, include_candidate=include_candidate)
     if kind in _RAW_MEDIA_TYPES:
         return await decode_raw_body(
-            request, carrier, include_candidate=include_candidate,
-            query_layout=layout)
+            request, carrier, include_candidate=include_candidate)
     if kind != "multipart/form-data":
         raise HTTPException(status_code=400, detail="expected multipart/form-data")
     try:
@@ -436,12 +415,6 @@ async def decode_endpoint(
         raise HTTPException(status_code=400, detail="expected multipart/form-data")
     try:
         chosen = pick_carrier(carrier, form)
-        form_layout = layout
-        if form_layout is None or str(form_layout).strip() == "":
-            item = form.get("layout")
-            if item is not None and not isinstance(item, UploadFile):
-                form_layout = str(item)
-        chosen_layout = normalize_layout(form_layout)
         upload = select_upload(form)
         if upload is None:
             raise HTTPException(
@@ -452,5 +425,4 @@ async def decode_endpoint(
     finally:
         await form.close()
     return await finish_decode(
-        chosen, data, include_candidate=include_candidate,
-        layout=chosen_layout)
+        chosen, data, include_candidate=include_candidate)

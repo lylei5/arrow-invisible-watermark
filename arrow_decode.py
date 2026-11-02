@@ -70,6 +70,12 @@ MARGIN_THRESHOLD = 1.8
 # still rejects that tie and the 0.17 / 0.32 wrong reads. Not a pixel cut.
 MIN_GROUP_MARGIN = 0.55
 
+# v3 有 CRC-7 兜底，单组裕度只作为弱先验：低尺度真机照常见「其余九组很强、
+# 一组接近打平」的情况。实测 0.55 → 0.20 在 extreme 仿真里不减少正确数、
+# 也不新增错号；真机 5 张里多救回 1 张（最弱组 0.21、CRC 通过）。
+# 只在调用方没有显式改写阈值时生效。
+MIN_GROUP_MARGIN_V3 = 0.20
+
 # --suspect: absolute z is not enough. The closest one-digit neighbor is
 # Hamming distance 3, so ideal soft info still scores that neighbor at
 # about z - 0.72. Strong evidence needs the gap as well as z.
@@ -98,13 +104,52 @@ CC_THRESHOLD = 0.85
 # A frame under the cut is rejected even when registration cc is high.
 # It does not relax the margin gates, and a larger digital upscale of the
 # same pixels is a different image that still has to clear margin / pad.
-LOGO_SCALE_MIN = 0.10
+#
+# 2026-11-03 下调 0.10 → 0.08（仅内孔 v3/v4），依据是真机打印件实测
+# （docs 第 10.6 节）：同一张纸 v3/v4 交替、22×6 mm、手机直出，
+# `logo_scale`≈0.093 时 v3 margin 中位 3.39（6/8）、v4 3.91（7/8），CRC 全过；
+# 受控降采样到 144 px 印版（ls≈0.056）时 v4 仍有 3.49、7/7。
+#
+# **为什么不像最初设想的那样一刀切降到 0.06**：ci_smoke 里有两个哨兵测试，
+# 其中一个记录了 0.077 的**「高裕度但读错」**样本（margin 4.2、margin_min 3.0、
+# 任何一个信号门都拦不住）。那道门就是为它设的。但注意那是 **edge 载体**——
+# edge 只有 3 bit 固定补零（漏检 1/8），而 inner v3/v4 有 CRC-7 兜底。
+# 所以按载体分开：
+#   inner（有 CRC）：0.08 —— 既保住 0.077 那条拒收，又放行实测过的 0.088–0.093 段
+#   edge（无真校验）：0.10 —— 维持原样，宁可少解不可错号
+# v2 内孔仍走 LOGO_SCALE_MIN_V2=0.20（没有 CRC，尺度必须更大）。
+LOGO_SCALE_MIN = 0.08
+# 边缘载体沿用原来的 0.10：它没有真正的完整性校验，尺度门是主要的防错号手段。
+LOGO_SCALE_MIN_EDGE = 0.10
+
+# 旧内孔版式 v2（140 码元、3 bit 固定补零）没有真正的完整性校验：补零只有
+# 3 bit 且位置固定，漏检率 1/8。实测两张 v2 印版实拍（logo_scale 0.13/0.16）
+# 都把 17701234567 读成 17701234564——低位 2 bit 一起翻，裕度 2.1、最弱组
+# 0.27–0.90，和正确读数完全无法区分，任何门限都拦不住。
+# v2 的码元组是「整组落在同一个孔」的块交织，A 三角（最弱孔）独占第 8–9 组，
+# 尺度一小那两组的 7 bit 就一起翻。所以 v2 只在画面足够大、码元采样远高于
+# 奈奎斯特时才是可信的：仿真里 0.20 以上（每码元 3.3 相机像素）两种模糊都读对，
+# 0.12–0.16 在 blur=1.1 时稳定读错。低于该尺度一律拒绝，宁可少解不错解。
+# 需要强行解旧印版时传 allow_legacy_v2=True。
+LOGO_SCALE_MIN_V2 = 0.20
 
 # 首解被拒时的兜底：换尺度再解一次。只对 v3（CRC 可裁决）启用；
-# 成功路径不付代价，只有拒绝路径最多多两次解码。实测 extreme 档
-# 24 个样本救回 2 个，且没有新增误收。
-RETRY_SCALES = (1.5, 0.7)
+# 成功路径不付代价，只有拒绝路径多付最多三次解码。
+# 实测：一张 logo_scale=0.135 的 v3 实拍在 1.0× 下 CRC 差 2 bit（读对了号码
+# 但 CRC 位本身被纠错），1.35×–2.2× 全部 CRC 通过且号码相同。多尺度是
+# 唯一不带统计风险的救回手段——裁决权始终在 CRC 手里。
+RETRY_SCALES = (1.35, 1.7, 0.8)
 RETRY_MAX_SIDE = 6000
+
+# 首解被拒时的第二类兜底：**反卷积重试**。
+# 缩放重试只改采样网格，改不了模糊；而失焦是低尺度下的主导失效因子
+# （相机 σ=1.2 px 时 0.13 档 9/12，σ=2.0 px 时 0/12）。失焦就是一次已知
+# 形式的卷积，所以用固定 PSF 做 Richardson-Lucy 再解一次。
+# 为什么只挂在「拒绝」路径上：无条件预处理会在轻失焦时过冲（实测把 0.16 档
+# 11/12 压到 9/12）。挂在重试上就只增不减，且裁决权仍归 CRC-7——
+# 与缩放重试同一条安全规则：必须 v3、必须 CRC 通过、必须与首解候选同号。
+RETRY_DECONV_SIGMAS = (2.0,)
+RETRY_DECONV_ITERS = 12
 
 ImageLike = Union[np.ndarray, str, os.PathLike]
 
@@ -156,14 +201,14 @@ def _session_key(carrier: str, margin_threshold: float,
                  min_group_margin: float, cc_threshold: Optional[float],
                  design, depth: Optional[float], layout_version: Optional[int],
                  window_pow: Optional[float], use_ecc_refine: bool,
-                 verbose: bool) -> tuple:
+                 verbose: bool, allow_legacy_v2: bool = False) -> tuple:
     return (carrier, float(margin_threshold), float(min_group_margin),
             None if cc_threshold is None else float(cc_threshold),
             None if design is None else id(design),
             None if depth is None else float(depth),
             None if layout_version is None else int(layout_version),
             None if window_pow is None else float(window_pow),
-            bool(use_ecc_refine), bool(verbose))
+            bool(use_ecc_refine), bool(verbose), bool(allow_legacy_v2))
 
 
 def _shared_session(**kwargs) -> Tuple["Decoder", threading.RLock]:
@@ -179,7 +224,7 @@ def _shared_session(**kwargs) -> Tuple["Decoder", threading.RLock]:
         kwargs.get("cc_threshold", CC_THRESHOLD),
         kwargs.get("design"), kwargs.get("depth"), kwargs.get("layout_version"),
         kwargs.get("window_pow"), kwargs.get("use_ecc_refine", True),
-        kwargs.get("verbose", False))
+        kwargs.get("verbose", False), kwargs.get("allow_legacy_v2", False))
     with _cache_lock:
         entry = _session_cache.get(key)
         if entry is None:
@@ -199,6 +244,7 @@ REASON_TEXT = {
     "crc_mismatch": "校验码不符",
     "low_cc": "配准 cc 不足",
     "low_logo_scale": "画面中 Logo 过小",
+    "low_logo_scale_v2": "旧版印版且画面过小（无校验位，不予采信）",
     "invalid_payload": "码字越界",
     "unreadable": "读不到图像",
     "sync_failed": "同步失败",
@@ -439,18 +485,25 @@ def effective_cc_threshold(cc_threshold: Optional[float],
 def apply_gate(raw: Dict, *, carrier: str = DEFAULT_CARRIER,
                margin_threshold: float = MARGIN_THRESHOLD,
                min_group_margin: float = MIN_GROUP_MARGIN,
-               cc_threshold: Optional[float] = CC_THRESHOLD) -> DecodeResult:
+               cc_threshold: Optional[float] = CC_THRESHOLD,
+               allow_legacy_v2: bool = False) -> DecodeResult:
     """Apply the production accept/reject gate to a research decoder dict.
 
     ``cc_threshold=None`` skips the registration gate. ``Decoder`` passes
     None for the default 0.85 cut when ECC refinement is off, because that
     path does not compute ``cc``. The mean-margin gate, the per-group
     minimum, and the group-0 pad check still apply.
+
+    ``allow_legacy_v2`` lifts the extra ``logo_scale`` requirement that
+    legacy inner v2 plates (no CRC) carry; see ``LOGO_SCALE_MIN_V2``.
     """
     if carrier not in CARRIERS:
         raise ValueError(f"carrier must be one of {CARRIERS}, got {carrier!r}")
     margin_threshold = float(margin_threshold)
     min_group_margin = float(min_group_margin)
+    # v3/v4 的完整性由 CRC-7 负责；单组裕度可以比 v2/edge 松。
+    if raw.get("layout_version") in (3, 4) and min_group_margin == MIN_GROUP_MARGIN:
+        min_group_margin = MIN_GROUP_MARGIN_V3
     if cc_threshold is not None:
         cc_threshold = float(cc_threshold)
 
@@ -472,8 +525,15 @@ def apply_gate(raw: Dict, *, carrier: str = DEFAULT_CARRIER,
             reasons.append("invalid_payload")
         if cc_threshold is not None and cc < cc_threshold:
             reasons.append("low_cc")
-        if logo_scale is not None and logo_scale < LOGO_SCALE_MIN:
+        # 尺度门按载体分：inner 有 CRC-7 兜底，可以比没有真校验的 edge 更松。
+        scale_min = LOGO_SCALE_MIN_EDGE if carrier == "edge" else LOGO_SCALE_MIN
+        if logo_scale is not None and logo_scale < scale_min:
             reasons.append("low_logo_scale")
+        # 旧内孔 v2 没有 CRC，只能靠「画面足够大」保证码元采样率
+        if (carrier == "inner" and raw.get("layout_version") == 2
+                and not allow_legacy_v2 and logo_scale is not None
+                and logo_scale < max(scale_min, LOGO_SCALE_MIN_V2)):
+            reasons.append("low_logo_scale_v2")
         if margin < margin_threshold:
             reasons.append("low_margin")
         if margin_min < min_group_margin:
@@ -538,108 +598,26 @@ def _unreadable(carrier: str, margin_threshold: float,
                       cc_threshold=cc_threshold)
 
 
-def _normalize_inner_layout(value) -> Union[int, str]:
-    """内孔版式：None / "auto" 自动，或显式 2 / 3。
+def _normalize_inner_layout(value) -> int:
+    """内孔版式。**默认就是 v4**（生产唯一版式）。
 
-    自动模式先解 v3（CRC-7），通过即定案；不过再解 v2，兼容已印出的旧版。
+    以前 ``None`` / ``"auto"`` 表示「先解 v3，不过再解 v2」；v2/v3 印版停产之后
+    这套多版式兜底已经没有意义，默认直接落到 v4。
+    显式传 2 / 3 仍然可用，只为了让仓库里的历史回归脚本能复现旧数字，
+    产品路径不会走到它们。
     """
     if value is None:
-        return "auto"
+        return 4
     if isinstance(value, str):
         text = value.strip().lower()
         if text in ("", "auto"):
-            return "auto"
+            return 4
         value = text
     layout = int(value)
-    if layout not in (2, 3):
-        raise ValueError(f"inner layout 只能是 2、3 或 auto，收到 {value!r}")
+    if layout not in (2, 3, 4):
+        raise ValueError(f"inner layout 只能是 2、3、4，收到 {value!r}")
     return layout
 
-
-class _InnerAuto:
-    """内孔自动版式：v3 优先，v2 兜底。"""
-
-    def __init__(self, design, depth: float, verbose: bool,
-                 use_ecc_refine: bool):
-        import arrow_inner as I
-        self._v3 = I.InnerDecoder(
-            I.InnerCarrier(design, depth=depth, verbose=verbose,
-                           layout_version=I.LAYOUT_V3),
-            use_ecc_refine=use_ecc_refine)
-        self._v2 = I.InnerDecoder(
-            I.InnerCarrier(design, depth=depth, verbose=verbose,
-                           layout_version=I.LAYOUT_V2),
-            use_ecc_refine=use_ecc_refine)
-
-    def _pair(self, gray: np.ndarray, return_debug: bool):
-        """同一画面、同一次配准，分别按 v3 / v2 测量。
-
-        v3 的 CRC 通过就不必再解 v2；否则才付第二遍测量的代价
-        （配准仍然只做一次）。
-        """
-        r = self._v3._reg.rectify(gray)
-        if not r.get("ok"):
-            return self._v3._rectify_failure(r), None
-        a = self._v3.decode_rectified(r, return_debug)
-        if a.get("crc_ok"):
-            return a, None
-        # 两版共用同一次配准，cc 是同一个值：cc 低于生产门时 v2 也过不了，
-        # 直接跳过第二遍测量（垃圾图/无码图能省掉一半时间）。
-        if float(a.get("cc", 0.0)) < CC_THRESHOLD:
-            return a, None
-        return a, self._v2.decode_rectified(r, return_debug)
-
-    def decode(self, image: np.ndarray, return_debug: bool = False):
-        if image.ndim == 3:
-            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        else:
-            gray = image
-
-        plates = self._v3._reg._plate_candidates(gray, k=3)
-        plate_first = False
-        if plates:
-            frac = plates[0].size / float(max(gray.size, 1))
-            plate_first = frac < 0.45 and max(gray.shape[:2]) >= 1600
-
-        best = None
-        best_key = None
-
-        def consider(a, b, path: str, isolated: bool = False) -> None:
-            nonlocal best, best_key
-            for res in (a, b):
-                if not res or not res.get("ok"):
-                    continue
-                valid = bool(res.get("crc_ok")) or res.get("pad_bits") == [0, 0, 0]
-                key = (1 if valid else 0,
-                       1 if float(res.get("cc", 0.0)) >= 0.85 else 0,
-                       float(res.get("mean_conf", 0.0)))
-                if best is None or key > best_key:
-                    best = dict(res)
-                    best_key = key
-                    best["path"] = path
-                    if isolated:
-                        best["isolated"] = True
-
-        def good_enough() -> bool:
-            return best is not None and best_key[0] == 1 and best_key[1] == 1
-
-        if not plate_first:
-            consider(*self._pair(gray, return_debug), "full")
-            if good_enough():
-                return best
-        for k, cand in enumerate(plates):
-            if cand.size / float(max(gray.size, 1)) >= 0.85:
-                continue
-            consider(*self._pair(cand, return_debug), f"plate#{k}", isolated=True)
-            if good_enough():
-                return best
-        if plate_first:
-            consider(*self._pair(gray, return_debug), "full")
-        if best is not None:
-            return best
-        return {"ok": False, "reason": "decode_failed", "digits": None,
-                "bits": None, "mean_conf": 0.0, "margin": 0.0, "cc": 0.0,
-                "layout_version": None, "crc_ok": None, "path": "none"}
 
 
 class Decoder:
@@ -662,6 +640,7 @@ class Decoder:
                  layout_version: Optional[int] = None,
                  window_pow: Optional[float] = None,
                  use_ecc_refine: bool = True,
+                 allow_legacy_v2: bool = False,
                  verbose: bool = False):
         if carrier not in CARRIERS:
             raise ValueError(f"carrier must be one of {CARRIERS}, got {carrier!r}")
@@ -669,6 +648,7 @@ class Decoder:
         self.margin_threshold = float(margin_threshold)
         self.min_group_margin = float(min_group_margin)
         self.use_ecc_refine = bool(use_ecc_refine)
+        self.allow_legacy_v2 = bool(allow_legacy_v2)
         # ECC off leaves cc at 0. Skip the default 0.85 gate; keep an
         # explicit non-default threshold, and always keep the margin gate.
         self.cc_threshold = effective_cc_threshold(
@@ -701,16 +681,11 @@ class Decoder:
             # does not retune inner robustness.
             used_depth = I.DEPTH if depth is None else float(depth)
             self.inner_layout = _normalize_inner_layout(layout_version)
-            if self.inner_layout == "auto":
-                self._inner = None
-                self._impl = _InnerAuto(self.design, used_depth, verbose,
-                                        self.use_ecc_refine)
-            else:
-                self._inner = I.InnerCarrier(
-                    self.design, depth=used_depth, verbose=verbose,
-                    layout_version=self.inner_layout)
-                self._impl = I.InnerDecoder(
-                    self._inner, use_ecc_refine=self.use_ecc_refine)
+            self._inner = I.InnerCarrier(
+                self.design, depth=used_depth, verbose=verbose,
+                layout_version=self.inner_layout)
+            self._impl = I.InnerDecoder(
+                self._inner, use_ecc_refine=self.use_ecc_refine)
 
     def decode(self, image: ImageLike, *, return_debug: bool = False) -> DecodeResult:
         """Decode one image or file path.
@@ -733,18 +708,25 @@ class Decoder:
                 r, carrier=self.carrier,
                 margin_threshold=self.margin_threshold,
                 min_group_margin=self.min_group_margin,
-                cc_threshold=self.cc_threshold)
+                cc_threshold=self.cc_threshold,
+                allow_legacy_v2=self.allow_legacy_v2)
 
         result = _gate(raw)
-        # 多尺度兜底：仅内孔 v3 且首解被拒时。CRC 负责裁决，不会因为
-        # 放大而把旧的 v2 读数放出去；return_debug 时跳过，避免调试图错位。
-        # 只救"像水印但差一点"的拒绝：同步成功、cc 不太差、裕度接近门限。
-        # 垃圾图/无码图的裕度远低于门槛，重试只会白花 1–2 秒。
+        # 多尺度兜底：仅内孔 v3 且首解被拒时。裁决权只在 CRC 手里，所以
+        # 重试结果必须是 v3 且 CRC 通过——绝不能让放大后的 v2 读数（无校验位）
+        # 借重试溜进来。return_debug 时跳过，避免调试图错位。
+        # 注意不要把 margin_min 放进这个前置条件：最常见的失败恰恰是
+        # 「其余组都很强、只有一组近打平」，此时 margin_min 接近 0，旧条件
+        # 会把最该重试的样本挡在门外。
+        # logo_scale 也必须沿用原图的：把同一张图放大不会多出光学采样，
+        # 用放大后的 scale 去过「旧版印版要够大」这道门等于自欺。
         plausibly_near = (
             bool(raw.get("ok"))
+            and raw.get("layout_version") == 3
             and float(raw.get("cc", 0.0)) >= 0.60
-            and float(raw.get("margin", 0.0)) >= 1.2
-            and float(raw.get("margin_min", 0.0)) >= 0.20)
+            and float(raw.get("margin", 0.0)) >= 1.2)
+        orig_scale = raw.get("logo_scale")
+        first_candidate = _candidate_digits(raw)
         if (not result.accepted and not return_debug and plausibly_near
                 and self.carrier == "inner"
                 and getattr(self, "inner_layout", None) in (3, "auto")):
@@ -757,6 +739,38 @@ class Decoder:
                 raw2 = self._impl.decode(scaled, return_debug=False)
                 if not isinstance(raw2, dict):
                     continue
+                if raw2.get("layout_version") != 3 or not raw2.get("crc_ok"):
+                    continue
+                # 只允许重试「确认」首解已经读到的号码，不允许它另起一个新号码。
+                # CRC-7 的漏检率是 1/128，多解一次就多一次撞车机会；实测在
+                # logo_scale=0.13 的压测里，无约束重试把误接受从 0 抬到 1/12。
+                # 加上这条之后，重试的证据是「两次独立测量 + CRC」三者一致。
+                if first_candidate is not None and raw2.get("digits") != first_candidate:
+                    continue
+                if orig_scale is not None:
+                    raw2 = dict(raw2, logo_scale=float(orig_scale))
+                res2 = _gate(raw2)
+                if res2.accepted:
+                    return res2
+        # 反卷积重试：同一道闸（v3 + CRC + 与首解同号），只换信号处理方式。
+        dec_sigmas = tuple(RETRY_DECONV_SIGMAS or ())
+        if (not result.accepted and not return_debug and plausibly_near
+                and dec_sigmas
+                and self.carrier == "inner"
+                and getattr(self, "inner_layout", None) in (3, "auto")):
+            import arrow_wm as _A
+            for sigma in dec_sigmas:
+                sharp = _A.richardson_lucy(loaded, float(sigma),
+                                           RETRY_DECONV_ITERS)
+                raw2 = self._impl.decode(sharp, return_debug=False)
+                if not isinstance(raw2, dict):
+                    continue
+                if raw2.get("layout_version") != 3 or not raw2.get("crc_ok"):
+                    continue
+                if first_candidate is not None and raw2.get("digits") != first_candidate:
+                    continue
+                if orig_scale is not None:
+                    raw2 = dict(raw2, logo_scale=float(orig_scale))
                 res2 = _gate(raw2)
                 if res2.accepted:
                     return res2
@@ -773,6 +787,7 @@ def decode(image: ImageLike, carrier: str = DEFAULT_CARRIER, *,
            layout_version: Optional[int] = None,
            window_pow: Optional[float] = None,
            use_ecc_refine: bool = True,
+           allow_legacy_v2: bool = False,
            verbose: bool = False) -> DecodeResult:
     """Decode one image. Carrier defaults to ``"inner"``; pass ``"edge"`` for legacy plates.
 
@@ -793,6 +808,7 @@ def decode(image: ImageLike, carrier: str = DEFAULT_CARRIER, *,
         layout_version=layout_version,
         window_pow=window_pow,
         use_ecc_refine=use_ecc_refine,
+        allow_legacy_v2=allow_legacy_v2,
         verbose=verbose,
     )
     with lock:

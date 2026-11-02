@@ -68,8 +68,7 @@ def main(argv=None) -> int:
                     help=f"边缘调制深度，默认 {A.MOD_DEPTH:g}；--layout 1 且不写时用 {A.V1_DEPTH:g}")
     ap.add_argument("--layout", type=int, choices=(1, 2), default=2,
                     help="边缘布局版本，1=冻结旧印版，2=当前默认")
-    ap.add_argument("--inner-layout", type=int, choices=(2, 3), default=3,
-                    help="内孔版式，3=交织+CRC-7（默认，新印版），2=旧印版")
+    # 内孔只有一种版式：v4（NRZ，77 码元）。v2/v3 已停产，不提供版式选择。
     ap.add_argument("--inner-depth", type=float, default=None,
                     help="内孔径向调制深度 px，默认取 arrow_inner.DEPTH（当前 10.0）")
     ap.add_argument("--no-check", action="store_true", help="跳过生成后的自检解码")
@@ -92,10 +91,10 @@ def main(argv=None) -> int:
     if "inner" in carriers:
         import arrow_inner as I
         inner_depth = I.DEPTH if args.inner_depth is None else float(args.inner_depth)
-        emb["inner"] = I.InnerCarrier(design, layout_version=args.inner_layout,
+        emb["inner"] = I.InnerCarrier(design, layout_version=I.LAYOUT_V4,
                                       depth=inner_depth)
         dec["inner"] = AD.Decoder(carrier="inner", design=design,
-                                  layout_version=args.inner_layout)
+                                  layout_version=I.LAYOUT_V4)
 
     os.makedirs(args.outdir, exist_ok=True)
     print(f"{'载体':<6}{'号码':<14}{'文件':<34}{'自检':>6}{'置信度':>10}{'耗时':>8}")

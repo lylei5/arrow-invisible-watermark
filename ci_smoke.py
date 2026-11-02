@@ -154,6 +154,50 @@ class GateTests(unittest.TestCase):
         self.assertIn("low_logo_scale", under.reason)
         self.assertIsNone(under.digits)
 
+    def test_legacy_v2_needs_a_big_logo(self):
+        """v2 没有 CRC：低位 2 bit 一起翻时，裕度和正确读数完全一样。
+
+        两张 v2 印版实拍（logo_scale 0.131 / 0.158）都把 17701234567 读成
+        17701234564，margin 2.1–2.6、margin_min 0.27–0.90——任何裕度门都
+        拦不住。所以 v2 只在画面足够大（logo_scale ≥ 0.20）时接受，
+        否则只能拒绝，宁可少解不错解。
+        """
+        base = {"ok": True, "digits": "17701234564", "payload_valid": True,
+                "margin": 2.53, "margin_min": 0.60, "cc": 0.967,
+                "mean_conf": 0.03, "pad_bits": [0, 0, 0], "layout_version": 2}
+        small = AD.apply_gate(dict(base, logo_scale=0.158), carrier="inner")
+        self.assertFalse(small.accepted, small.public_dict())
+        self.assertIn("low_logo_scale_v2", small.reason)
+        self.assertIsNone(small.digits)
+        # 调用方明示放行旧版时才接受（知道有错号风险）
+        forced = AD.apply_gate(dict(base, logo_scale=0.158), carrier="inner",
+                               allow_legacy_v2=True)
+        self.assertTrue(forced.accepted, forced.public_dict())
+        # 画面够大时 v2 照旧接受，旧印版兼容性不受影响
+        big = AD.apply_gate(dict(base, logo_scale=AD.LOGO_SCALE_MIN_V2),
+                            carrier="inner")
+        self.assertTrue(big.accepted, big.public_dict())
+        # v3 有 CRC，不受这条影响
+        v3 = AD.apply_gate(dict(base, logo_scale=0.158, layout_version=3,
+                                pad_bits=None, crc_ok=True), carrier="inner")
+        self.assertTrue(v3.accepted, v3.public_dict())
+
+    def test_scan_window_widens_as_the_logo_shrinks(self):
+        """小 logo 矫正后模糊被放大 1/scale 倍，采样窗必须跟着变宽。
+
+        固定 ±14 px 的窗口在 logo_scale≈0.13 时整条落在边缘斜坡里，
+        背景/墨色电平取到的是斜坡上的点，调制幅度只剩标称值的 20–40%。
+        """
+        import arrow_inner as I
+        wide = I.InnerDecoder.scan_half_for_scale(0.13)
+        narrow = I.InnerDecoder.scan_half_for_scale(1.0)
+        self.assertGreater(wide, narrow)
+        self.assertGreaterEqual(wide, I.SCAN_HALF_MIN)
+        self.assertLessEqual(wide, I.SCAN_HALF_MAX)
+        # 尺度未知时退回默认窗
+        self.assertEqual(I.InnerDecoder.scan_half_for_scale(None),
+                         I.SCAN_HALF)
+
     def test_gate_photo_inner_fields_are_accepted(self):
         # Real inner photo 17701234567: correct candidate, previously rejected
         # only by logo_scale≈0.1595 and margin_min≈0.604. Those cuts are now
@@ -337,8 +381,8 @@ class RoundtripTests(unittest.TestCase):
         self.assertEqual(result.digits, self.digits)
         self.assertGreaterEqual(result.margin, AD.MARGIN_THRESHOLD)
         self.assertGreaterEqual(result.margin_min, AD.MIN_GROUP_MARGIN)
-        # 默认新印版是 v3：CRC-7 取代固定补零。
-        self.assertEqual(result.raw.get("layout_version"), I.LAYOUT_V3)
+        # 印版是 v4（NRZ）：同样用 CRC-7 取代固定补零。
+        self.assertEqual(result.raw.get("layout_version"), I.LAYOUT_V4)
         self.assertTrue(result.raw.get("crc_ok"))
         self.assertIsNone(result.raw.get("pad_bits"))
         self.assertGreaterEqual(result.cc, AD.CC_THRESHOLD)
@@ -427,7 +471,7 @@ class ServiceContractTests(unittest.TestCase):
             "margin": 4.2, "cc": 0.96, "mean_conf": 0.05, "logo_scale": 1.0,
         }
 
-        def fake(carrier, gray, layout="2"):
+        def fake(carrier, gray, layout=""):
             self.calls.append((carrier, int(gray.size), layout))
             if gray.size == 0:
                 raw = {"ok": False, "reason": "unreadable", "digits": None}
@@ -493,6 +537,8 @@ class ServiceContractTests(unittest.TestCase):
         ):
             self.assertIn(key, body)
         self.assertNotIn("raw", body)
+        # 内孔只有 v4 一种版式，服务端没有版式开关。
+        self.assertEqual(self.svc.INNER_LAYOUT, 4)
         self.assertNotIn("candidate_digits", body)
         self.assertTrue(body["accepted"])
         self.assertEqual(body["status"], "accepted")
@@ -501,7 +547,7 @@ class ServiceContractTests(unittest.TestCase):
         self.assertEqual(body["reason"], "")
         self.assertEqual(body["reason_text"], "接受")
         self.assertTrue(body["ok"])
-        self.assertEqual(self.calls, [("inner", 1, "2")])
+        self.assertEqual(self.calls, [("inner", 1, "")])
 
     def test_reject_omits_candidate_and_ok_is_not_success(self):
         self.raw = {
@@ -583,13 +629,12 @@ class ServiceContractTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(self.calls[0][0], "inner")
 
-    def test_bad_layout_is_an_http_error(self):
+    def test_layout_parameter_is_ignored(self):
+        # 版式固定 v4：老客户端即使还带 layout 参数也不报错，直接忽略。
         response = self._post("/decode?layout=9")
-        self.assertEqual(response.status_code, 400)
-        body = response.json()
-        self.assertEqual(body["status"], "error")
-        self.assertIn("layout", body["detail"])
-        self.assertEqual(self.calls, [])
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["status"], "accepted")
+        self.assertEqual(len(self.calls), 1)
 
     def test_bad_carrier_and_missing_image(self):
         bad = self.client.post(
@@ -621,7 +666,7 @@ class ServiceContractTests(unittest.TestCase):
         self.assertNotIn("candidate_digits", body)
         self.assertEqual(body["reason"], "unreadable")
         self.assertEqual(body["reason_text"], "读不到图像")
-        self.assertEqual(self.calls, [("inner", 0, "2")])
+        self.assertEqual(self.calls, [("inner", 0, "")])
 
     def test_token_guards_decode_but_not_health(self):
         os.environ["DECODE_TOKEN"] = "devsecret"
@@ -654,7 +699,7 @@ class ServiceContractTests(unittest.TestCase):
         self.assertEqual(body["digits"], "13800138000")
         self.assertNotIn("candidate_digits", body)
         self.assertEqual(body["carrier"], "inner")
-        self.assertEqual(self.calls, [("inner", 1, "2")])
+        self.assertEqual(self.calls, [("inner", 1, "")])
 
     def test_json_query_carrier_beats_body_and_data_url(self):
         payload = "data:image/png;base64," + base64.b64encode(_PNG_1X1).decode("ascii")
@@ -699,7 +744,7 @@ class ServiceContractTests(unittest.TestCase):
             headers={"content-type": "image/png"},
         )
         self.assertEqual(response.status_code, 200, response.text)
-        self.assertEqual(self.calls, [("inner", 1, "2")])
+        self.assertEqual(self.calls, [("inner", 1, "")])
         empty = self.client.post(
             "/decode",
             content=b"",
@@ -838,8 +883,8 @@ class LayoutVersionTests(unittest.TestCase):
         inner = I.InnerCarrier(self.v2, verbose=False)
         inner_plate = inner.embed(digits)
         self.assertEqual(inner_plate["digits"], digits)
-        self.assertEqual(len(inner.cells), I.N_CELLS_V3)
-        self.assertEqual(inner.layout_version, I.LAYOUT_V3)
+        self.assertEqual(len(inner.cells), I.N_CELLS_V4)
+        self.assertEqual(inner.layout_version, I.LAYOUT_V4)
 
     def test_clean_soft_n_is_order_one(self):
         digits = "13800138000"
@@ -893,16 +938,17 @@ class InnerV3Tests(unittest.TestCase):
                      for b in range(7 * g, 7 * g + 7)}
             self.assertGreaterEqual(len(holes), 3, (g, holes))
 
-    def test_auto_reads_both_plate_layouts(self):
+    def test_default_decoder_reads_v4_plates(self):
+        """默认解码器就是 v4（NRZ 77 码元）。旧 v2/v3 印版已停产。"""
         I = self.I
         session = AD.Decoder(carrier="inner", design=self.design)
-        for layout in (I.LAYOUT_V2, I.LAYOUT_V3):
-            plate = I.InnerCarrier(self.design, verbose=False,
-                                   layout_version=layout).embed("13912345678")["plate"]
-            result = session.decode(plate)
-            self.assertTrue(result.accepted, (layout, result.public_dict()))
-            self.assertEqual(result.digits, "13912345678")
-            self.assertEqual(result.raw.get("layout_version"), layout)
+        self.assertEqual(session.inner_layout, I.LAYOUT_V4)
+        plate = I.InnerCarrier(self.design, verbose=False,
+                               layout_version=I.LAYOUT_V4).embed("13912345678")["plate"]
+        result = session.decode(plate)
+        self.assertTrue(result.accepted, result.public_dict())
+        self.assertEqual(result.digits, "13912345678")
+        self.assertEqual(result.raw.get("layout_version"), I.LAYOUT_V4)
 
     def test_crc_mismatch_is_rejected(self):
         raw = {

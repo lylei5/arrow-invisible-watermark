@@ -16,6 +16,8 @@ https://ms-2w5g828w-100050884192.gw.ap-shanghai.ti.tencentcs.com/ms-2w5g828w/dec
 
 ## 请求
 
+**内孔只有一种版式**：v4（NRZ，77 码元，每码元 0.328 mm）。旧的 v2/v3 印版已停产，服务端不再接受版式选择参数；老客户端即使仍带 `layout=` 也会被忽略。
+
 `POST /decode`。原来的 `multipart/form-data` 不变。另外也接受 JSON `image_base64`，以及 `application/octet-stream` / `image/jpeg` / `image/png` 的原始图片字节（`carrier` 放查询参数）。`callContainer` 默认发 JSON，组 multipart 不可靠，照片优先用原始字节。细节和 100 KiB 文本上限见 [wechat-cloudrun.md](wechat-cloudrun.md)。
 
 multipart 的约定：
@@ -23,7 +25,7 @@ multipart 的约定：
 | 位置 | 名字 | 必填 | 说明 |
 |---|---|---|---|
 | 文件字段 | `image` | 是 | 照片。也接受 `file`、`img`、`photo`、`picture`，或其他任意一个文件字段。小程序 `wx.uploadFile` 的 `name` 请用 `image` |
-| 查询或表单 | `carrier` | 否 | `inner`（默认）或 `edge`。查询参数优先于表单字段。不要传 `both`。旧边缘印版才传 `edge` |
+| 查询或表单 | `carrier` | 否 | `inner`（默认）或 `edge`。查询参数优先于表单字段。不要传 `both`。旧边缘印版才传 `edge`
 | 头 | `X-Decode-Token` | 仅当服务设置了环境变量 `DECODE_TOKEN` | 与变量值一致。未设置该变量时不要带头，服务不鉴权 |
 
 微信侧用 `wx.uploadFile`：`url` 为网关完整地址（含 `/ms-<id>/decode`），`name` 为 `image`，`formData` 可带 `carrier: "inner"`（不带则服务端默认内孔）。旧边缘印版才传 `carrier: "edge"`。若控制台另开了 TI-ONE 服务鉴权，还要按平台要求带 `Authorization`，那是网关的头，不是 `X-Decode-Token`。
@@ -63,6 +65,8 @@ multipart 的约定：
 | `pad_mismatch` | 补零不符 |
 | `low_cc` | 配准 cc 不足 |
 | `low_logo_scale` | 画面中 Logo 过小 |
+
+> 尺度门不是一刀切：内孔（v4，NRZ）有 CRC-7 兜底，门是 `logo_scale ≥ 0.08`；边缘载体没有真校验，仍是 `≥ 0.10`。响应里的 `logo_scale` 小于对应值时`reason` 含 `low_logo_scale`。
 | `invalid_payload` | 码字越界 |
 | `unreadable` | 读不到图像 |
 | `sync_failed` | 同步失败 |

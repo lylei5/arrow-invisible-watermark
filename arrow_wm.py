@@ -129,6 +129,15 @@ MIN_CLEARANCE: int = min_clearance_for_depth(MOD_DEPTH)  # 24 @ d=6
 MIN_CELL_H: int = 14
 LAYOUT_VERSION: int = 2
 V1_DEPTH: float = 1.8
+# 矫正（相机域 -> 2200 px 底版域）的重采样核。
+# 小 logo 实拍时这是一次 5–10 倍的放大，双线性会把边缘斜坡摊平成三角形：
+# 斜坡形状变了，梯度质心虽然仍近似无偏，但斜坡两侧的样本被混在一起，
+# 亚像素调制被抹得更薄。双三次的重建斜坡更接近原始误差函数。
+# 但**实测没有收益**（bench: logo_scale 0.13/0.16 × 失焦 1.2/1.6/2.0 × 12 样本，
+# 双线性 36/72，双三次 34/72，Lanczos4 34/72；模糊大时双三次还更差，
+# 因为它的振铃会被梯度质心当成位移）。保留开关只是为了让后来的人不必
+# 再重做一遍这个实验 —— 默认不要改。
+RECTIFY_INTERP: int = cv2.INTER_LINEAR
 V1_MIN_CLEARANCE: int = 20
 PAIR_PERM_ID_V1: str = "v1-identity"
 PAIR_PERM_ID_V2: str = "v2-snake-r1"
@@ -607,6 +616,81 @@ def imwrite_u(path: str, img: np.ndarray) -> bool:
         return True
     except Exception:
         return False
+
+
+def gamma_lut(gamma: float = 2.2) -> np.ndarray:
+    """sRGB 显示值 -> 线性光 的 256 项查找表（结果仍归一到 0..255）。"""
+    idx = np.arange(256, dtype=np.float64) / 255.0
+    lin = np.power(idx, float(gamma))
+    return np.round(lin * 255.0).clip(0, 255).astype(np.uint8)
+
+
+_LIN_LUT: Optional[np.ndarray] = None
+
+
+def linearize_u8(img: np.ndarray, gamma: float = 2.2) -> np.ndarray:
+    """把 gamma 编码的 8bit 图换成线性光版本。
+
+    为什么：梯度加权质心假设边缘是一条**对称**的阶跃响应。而相机输出是
+    sRGB gamma 编码的，同一个物理阶跃在 gamma 域里是**不对称**的（暗部被压缩、
+    亮部被拉伸），质心因此系统性偏向亮侧；模糊越宽偏移越大。
+    线性化之后斜坡重新对称，质心才是无偏的。
+
+    对**输入和参考模板要同时做**——只做一边会让配准与半径参考错位。
+    """
+    global _LIN_LUT
+    if img is None or img.size == 0:
+        return img
+    if img.dtype != np.uint8:
+        arr = np.clip(img, 0, 255).astype(np.uint8)
+    else:
+        arr = img
+    if _LIN_LUT is None or abs(gamma - 2.2) > 1e-6:
+        _LIN_LUT = gamma_lut(gamma)
+    return cv2.LUT(np.ascontiguousarray(arr), _LIN_LUT)
+
+
+def gauss_psf(sigma: float) -> np.ndarray:
+    """归一化高斯 PSF。sigma<=0 时退化成 1x1 单位核。"""
+    if sigma <= 0:
+        return np.ones((1, 1), np.float32)
+    k = max(3, 2 * int(round(3.0 * sigma)) + 1)
+    ax = np.arange(k, dtype=np.float32) - (k - 1) / 2.0
+    g = np.exp(-0.5 * (ax / float(sigma)) ** 2)
+    psf = np.outer(g, g)
+    return (psf / psf.sum()).astype(np.float32)
+
+
+def richardson_lucy(img: np.ndarray, sigma: float,
+                    iters: int = 12) -> np.ndarray:
+    """在**相机域**做 Richardson-Lucy 反卷积，把失焦糊掉的边缘抢回来。
+
+    为什么需要它：实测失焦是低尺度下的主导失效因子（logo_scale=0.13 时
+    相机 σ=1.2 px 能过 9/12，σ=2.0 px 只剩 0/12）。失焦在数学上就是一次
+    已知形式的卷积，原则上可逆；而手机主摄在 7–10 cm 工作距离上的 σ
+    相当稳定（README 用五张实拍标定到 ≈1.6 px），所以可以拿固定 PSF 去反卷积。
+
+    但**不要无条件用它**。同一批 72 个样本上（`exp_decode_variants.py
+    --variant preproc`）：
+        无预处理            36/72
+        σ=1.2               36/72（还多出 1 例错号）
+        σ=1.6               39/72
+        σ=2.0               40/72
+    均值只涨 4，可是**逐格看是拆东墙补西墙**：σ=2.0 把重失焦档从 0/12、2/12
+    抬到 1/12、6/12，同时把轻失焦档从 11/12 压到 9/12——PSF 估大了就过冲，
+    振铃会被梯度质心当成位移。所以正确用法是**只在首解被拒时重试**，
+    让 CRC 裁决（见 `arrow_decode.RETRY_DECONV_SIGMAS`）。
+    """
+    psf = gauss_psf(sigma)
+    psf_t = psf[::-1, ::-1]
+    obs = np.clip(img.astype(np.float32) / 255.0, 1e-4, 1.0)
+    est = obs.copy()
+    for _ in range(int(iters)):
+        conv = cv2.filter2D(est, -1, psf, borderType=cv2.BORDER_REPLICATE)
+        ratio = obs / np.clip(conv, 1e-4, None)
+        est *= cv2.filter2D(ratio, -1, psf_t, borderType=cv2.BORDER_REPLICATE)
+        est = np.clip(est, 1e-4, 1.0)
+    return np.clip(est * 255.0, 0.0, 255.0).astype(np.uint8)
 
 
 def _load_master() -> Optional[np.ndarray]:
@@ -1328,13 +1412,15 @@ PAIR_PERM_V2: Tuple[int, ...] = (
     4, 12, 34, 43, 44, 52, 54,
 )
 # v1 @ depth 1.8 的码元几何（含测量窗）快照。
-# 这是「布局漂移」的回归哨兵，不是印版真值的唯一来源：真正的锚点是
-# samples/edge/ARROW_13800138000.png——它能解出 13800138000，才说明
-# 现行 v1 几何仍与已印出的旧版一致（ci_smoke 里也验这一条）。
+# 这是「布局漂移」的回归哨兵：它只保证 v1 码元几何不被无意改动，
+# 不证明实物印版可解——仓库里没有 v1 样张（samples/edge 下的
+# ARROW_13800138000.png 是 ±6px 的 v2 印版，layout_version=2）。
+# 因此解 v1 旧图只能靠现场照片回归，不要拿这张样张当 v1 锚点。
 # 重算：python -c "import arrow_wm as A; d=A.ArrowDesign(layout_version=1,
 # depth=A.V1_DEPTH, verbose=False); print(A.layout_geometry_sha1(d.cells))"
-# 历史：旧值 ed2c4135… 与引入它的提交本身就对不上（cb7a37b 起 CI 一直红），
-# 2026-11-02 用上式重算并核对样张后更正为下列值。
+# 桌面实测曾写成 4f2bdd02…，但在 Linux 上对不上这份代码：
+# numpy 2.0–2.4（OpenCV 4.10–5.0）得到 8101af1d…，numpy 2.5.4 得到 ed2c4135…。
+# 与 requirements.txt 的 numpy==2.4.6 对齐，哨兵保持 8101af1d…。
 V1_GEOMETRY_SHA1: str = "8101af1dcc76369d7370ea354abd1d292c9edaa7"
 
 
@@ -2121,7 +2207,7 @@ class WatermarkDecoder:
                 Hf = (Si @ wm.astype(np.float32) @ S).astype(np.float32)
                 warped = cv2.warpPerspective(
                     warped, Hf, (CANVAS_W, CANVAS_H),
-                    flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP,
+                    flags=RECTIFY_INTERP | cv2.WARP_INVERSE_MAP,
                     borderMode=cv2.BORDER_REPLICATE)
                 shift = float(np.abs(moved - corners.reshape(-1, 2)).max()) / float(sc)
                 return warped, {"cc": float(cc), "motion": int(motion),
@@ -2132,7 +2218,7 @@ class WatermarkDecoder:
                 wf[1, 2] /= sc
                 warped = cv2.warpAffine(
                     warped, wf, (CANVAS_W, CANVAS_H),
-                    flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP,
+                    flags=RECTIFY_INTERP | cv2.WARP_INVERSE_MAP,
                     borderMode=cv2.BORDER_REPLICATE)
                 residual = float(math.hypot(float(wf[0, 2]), float(wf[1, 2])))
                 return warped, {"cc": float(cc), "motion": int(motion),
@@ -2189,7 +2275,7 @@ class WatermarkDecoder:
         S = np.array([[sc, 0, 0], [0, sc, 0], [0, 0, 1]], np.float32)
         Hf = (np.linalg.inv(S) @ best_T @ S).astype(np.float32)
         out = cv2.warpPerspective(warped, Hf, (CANVAS_W, CANVAS_H),
-                                  flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP,
+                                  flags=RECTIFY_INTERP | cv2.WARP_INVERSE_MAP,
                                   borderMode=cv2.BORDER_REPLICATE)
         return out, best_s
 
@@ -2229,7 +2315,7 @@ class WatermarkDecoder:
         best = None
         for k, Hm in enumerate(Hs):
             warped = cv2.warpPerspective(gray, Hm, (CANVAS_W, CANVAS_H),
-                                         flags=cv2.INTER_LINEAR,
+                                         flags=RECTIFY_INTERP,
                                          borderMode=cv2.BORDER_REPLICATE)
             ecc: Dict = {}
             if self.use_ecc_refine:
