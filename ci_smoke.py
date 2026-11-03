@@ -760,6 +760,68 @@ class ServiceContractTests(unittest.TestCase):
         self.assertEqual(denied.status_code, 401)
         self.assertEqual(self.client.get("/health").status_code, 200)
 
+    def test_long_side_capped_at_900_before_decode(self):
+        """Full-frame photos shrink to long side 900 before arrow_decode.
+
+        1280×725 is the ~16:9 shape that misses the 15s callContainer
+        deadline on 0.5 CPU. A ~3.67:1 crop under 900 is left alone.
+        All three body shapes share finish_decode, so each must log once
+        and hand the decoder a 900×510 array.
+        """
+        import cv2
+
+        self.assertEqual(self.svc.DECODE_MAX_LONG_SIDE, 900)
+        wide = np.arange(725 * 1280, dtype=np.uint8).reshape(725, 1280)
+        capped, did = self.svc.cap_long_side(wide)
+        self.assertTrue(did)
+        self.assertEqual(capped.shape, (510, 900))
+        expect = cv2.resize(wide, (900, 510), interpolation=cv2.INTER_AREA)
+        self.assertTrue(np.array_equal(capped, expect))
+
+        portrait, did_p = self.svc.cap_long_side(wide.T.copy())
+        self.assertTrue(did_p)
+        self.assertEqual(portrait.shape, (900, 510))
+
+        crop = np.full((200, 734), 180, np.uint8)  # ~3.67:1, long side 734
+        same, did_c = self.svc.cap_long_side(crop)
+        self.assertFalse(did_c)
+        self.assertIs(same, crop)
+
+        exact = np.full((500, 900), 1, np.uint8)
+        untouched, did_e = self.svc.cap_long_side(exact)
+        self.assertFalse(did_e)
+        self.assertIs(untouched, exact)
+
+        color = np.zeros((100, 1800, 3), np.uint8)
+        color_out, did_color = self.svc.cap_long_side(color)
+        self.assertTrue(did_color)
+        self.assertEqual(color_out.shape, (50, 900, 3))
+
+        empty = np.empty((0,), np.uint8)
+        empty_out, did_empty = self.svc.cap_long_side(empty)
+        self.assertFalse(did_empty)
+        self.assertIs(empty_out, empty)
+
+        ok, buf = cv2.imencode(".png", wide)
+        self.assertTrue(bool(ok))
+        png = buf.tobytes()
+        cases = (
+            {"files": {"image": ("frame.png", png, "image/png")}},
+            {"content": png, "headers": {"content-type": "image/png"}},
+            {"json": {"image_base64": base64.b64encode(png).decode("ascii")}},
+        )
+        for kwargs in cases:
+            self.calls.clear()
+            with self.assertLogs("decode_api", level="INFO") as caught:
+                response = self.client.post("/decode", **kwargs)
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(self.calls, [("inner", 900 * 510, "")])
+            text = "\n".join(caught.output)
+            self.assertEqual(text.count("decode image"), 1)
+            self.assertIn("original=1280x725", text)
+            self.assertIn("resized=yes", text)
+            self.assertIn("final=900x510", text)
+
 
 class CloudRunPackagingTests(unittest.TestCase):
     """Repo-root and wxcloudrun/ build contexts ship the same image inputs."""

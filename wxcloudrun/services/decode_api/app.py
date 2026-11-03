@@ -9,12 +9,18 @@ success bit. ``candidate_digits`` is omitted unless ``debug`` is set and
 Listen on ``0.0.0.0:$PORT`` (default **8501**). ``POST /decode`` keeps
 multipart, and also accepts JSON ``image_base64`` or a raw image body so
 ``wx.cloud.callContainer`` can send a photo without building a form.
+
+``callContainer`` hard-timeouts at 15s. After the body is decoded to an
+array and before ``arrow_decode``, a long side above 900 px is reduced to
+900 with ``INTER_AREA`` (aspect preserved). One info log records the
+original size, whether it was resized, and the final size.
 """
 from __future__ import annotations
 
 import base64
 import hashlib
 import json
+import logging
 import os
 import re
 import secrets
@@ -52,6 +58,28 @@ IMAGE_FIELDS = ("image", "file", "img", "photo", "picture")
 # Phone photos are a few megabytes. Caps are abuse limits, not decode knobs.
 MAX_IMAGE_BYTES = 20 * 1024 * 1024
 MAX_PIXELS = 40_000_000
+
+# callContainer 硬超时 15s。0.5 核 / 1GB 上整幅约 16:9 的图在 arrow_decode 里要
+# 4–13s，紧裁的 ARROW（约 3.67:1）则 <0.4s。长边收到正好 900（INTER_AREA，
+# 保持比例）再解码，三种正文走同一条 finish_decode。等于 900 的不改。
+DECODE_MAX_LONG_SIDE = 900
+
+logger = logging.getLogger("decode_api")
+
+
+def _ensure_decode_logger() -> None:
+    """Info lines must reach stderr. uvicorn does not lower the root level."""
+    logger.setLevel(logging.INFO)
+    if logger.handlers:
+        return
+    handler = logging.StreamHandler()
+    handler.setLevel(logging.INFO)
+    handler.setFormatter(logging.Formatter("%(levelname)s %(name)s %(message)s"))
+    logger.addHandler(handler)
+    logger.propagate = False
+
+
+_ensure_decode_logger()
 
 # Base64 expands by 4/3. Cap the text before decoding so a 1GB instance is
 # not asked to materialize an unbounded body. Raw image bodies use
@@ -238,6 +266,52 @@ def bytes_to_gray(data: bytes) -> np.ndarray:
     return gray
 
 
+def image_wh(image: np.ndarray) -> tuple[int, int]:
+    """Width, height. An undecodable array is 0×0."""
+    if image is None or getattr(image, "ndim", 0) < 2 or image.size == 0:
+        return 0, 0
+    return int(image.shape[1]), int(image.shape[0])
+
+
+def cap_long_side(image: np.ndarray,
+                  max_long_side: int = DECODE_MAX_LONG_SIDE) -> tuple[np.ndarray, bool]:
+    """Downscale with ``INTER_AREA`` so the long side is exactly ``max_long_side``.
+
+    Aspect is preserved. Grayscale ``HxW`` and color ``HxWxC`` both work.
+    Images already at or under the cap, and empty arrays, are returned as-is.
+    """
+    width, height = image_wh(image)
+    long_side = max(width, height)
+    if long_side <= max_long_side or max_long_side < 1:
+        return image, False
+    if width >= height:
+        new_w = max_long_side
+        new_h = max(1, int(round(height * float(max_long_side) / float(width))))
+    else:
+        new_h = max_long_side
+        new_w = max(1, int(round(width * float(max_long_side) / float(height))))
+    resized = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_AREA)
+    return resized, True
+
+
+def prepare_decode_image(image: np.ndarray) -> np.ndarray:
+    """Cap the long side and log original / resized / final once.
+
+    Called from ``finish_decode`` after bytes become an array and before
+    ``arrow_decode``.
+    """
+    orig_w, orig_h = image_wh(image)
+    prepared, resized = cap_long_side(image)
+    final_w, final_h = image_wh(prepared)
+    logger.info(
+        "decode image original=%dx%d resized=%s final=%dx%d",
+        orig_w, orig_h,
+        "yes" if resized else "no",
+        final_w, final_h,
+    )
+    return prepared
+
+
 def media_type(content_type: str) -> str:
     """``Content-Type`` without parameters, lowercased."""
     return (content_type or "").split(";", 1)[0].strip().lower()
@@ -298,7 +372,7 @@ async def finish_decode(carrier: str, data: bytes, *,
     if not data:
         raise HTTPException(status_code=400, detail="empty image")
     ensure_upload_size(len(data))
-    gray = bytes_to_gray(data)
+    gray = prepare_decode_image(bytes_to_gray(data))
     try:
         result = await run_in_threadpool(decode_image, carrier, gray)
     except HTTPException:
