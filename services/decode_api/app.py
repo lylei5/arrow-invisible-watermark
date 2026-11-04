@@ -9,23 +9,19 @@ success bit. ``candidate_digits`` is omitted unless ``debug`` is set and
 Listen on ``0.0.0.0:$PORT`` (default **8501**). ``POST /decode`` keeps
 multipart, and also accepts JSON ``image_base64`` or a raw image body so
 ``wx.cloud.callContainer`` can send a photo without building a form.
-
-``callContainer`` hard-timeouts at 15s. After the body is decoded to an
-array and before ``arrow_decode``, a long side above 900 px is reduced to
-900 with ``INTER_AREA`` (aspect preserved). One info log records the
-original size, whether it was resized, and the final size.
 """
 from __future__ import annotations
 
 import base64
 import hashlib
 import json
-import logging
 import os
 import re
 import secrets
 import sys
 import threading
+import urllib.error
+import urllib.request
 from contextlib import asynccontextmanager
 from typing import Optional
 
@@ -35,6 +31,14 @@ from fastapi import FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import UploadFile
+
+# 云托管实例是 0.5 CPU：OpenCV 默认按可见核数开线程，在这种小实例上线程争抢
+# 反而更慢、峰值内存更高（容易把 1 GB 的实例顶掉）。进程内解码本来就被一把锁
+# 串行化，所以限制成单线程没有任何吞吐损失。
+try:
+    cv2.setNumThreads(1)
+except Exception:                      # pragma: no cover - 防御性
+    pass
 
 # Repo root holds arrow_decode.py / arrow_wm.py / arrow_inner.py. Insert it so
 # `uvicorn app:app` from this directory and `uvicorn services.decode_api.app:app`
@@ -58,28 +62,6 @@ IMAGE_FIELDS = ("image", "file", "img", "photo", "picture")
 # Phone photos are a few megabytes. Caps are abuse limits, not decode knobs.
 MAX_IMAGE_BYTES = 20 * 1024 * 1024
 MAX_PIXELS = 40_000_000
-
-# callContainer 硬超时 15s。0.5 核 / 1GB 上整幅约 16:9 的图在 arrow_decode 里要
-# 4–13s，紧裁的 ARROW（约 3.67:1）则 <0.4s。长边收到正好 900（INTER_AREA，
-# 保持比例）再解码，三种正文走同一条 finish_decode。等于 900 的不改。
-DECODE_MAX_LONG_SIDE = 900
-
-logger = logging.getLogger("decode_api")
-
-
-def _ensure_decode_logger() -> None:
-    """Info lines must reach stderr. uvicorn does not lower the root level."""
-    logger.setLevel(logging.INFO)
-    if logger.handlers:
-        return
-    handler = logging.StreamHandler()
-    handler.setLevel(logging.INFO)
-    handler.setFormatter(logging.Formatter("%(levelname)s %(name)s %(message)s"))
-    logger.addHandler(handler)
-    logger.propagate = False
-
-
-_ensure_decode_logger()
 
 # Base64 expands by 4/3. Cap the text before decoding so a 1GB instance is
 # not asked to materialize an unbounded body. Raw image bodies use
@@ -199,9 +181,56 @@ def candidate_debug_allowed(debug: bool) -> bool:
     return bool(os.environ.get("DECODE_TOKEN", "").strip())
 
 
+def _reason_text_with_numbers(result: AD.DecodeResult,
+                             input_size: Optional[tuple] = None) -> str:
+    """把拒绝原因翻成**带数值**的中文，便于用户把屏幕上那句话直接报给支持。
+
+    ``AD.reason_text`` 只给一句"画面中 Logo 过小"，看不出到底差多少；现场反馈
+    时无法区分"拍太远"和"裕度不够"。这里把触发的那条判据和实测值都写进去，
+    并附上服务端实际收到的图片尺寸——那是判断"客户端传的是紧凑裁剪还是整张照片"
+    的唯一可靠线索（两家尺寸差一个数量级）。
+    """
+    reason = str(result.reason or "")
+    if result.accepted:
+        return AD.reason_text(reason)
+
+    parts: list[str] = []
+    ls = result.logo_scale
+    if "low_logo_scale" in reason or "low_logo_scale_v2" in reason:
+        need = AD.LOGO_SCALE_MIN
+        if ls is not None:
+            parts.append(f"画面中 Logo 过小（logo_scale={ls:.3f}，需 ≥{need:.2f}）")
+        else:
+            parts.append("画面中 Logo 过小")
+    if "low_cc" in reason:
+        parts.append(f"配准不足（cc={result.cc:.2f}，需 ≥{AD.CC_THRESHOLD:.2f}）")
+    if "crc_mismatch" in reason:
+        parts.append("校验码不符（CRC 未通过，多半是拍糊了或距离太远）")
+    if "low_group_margin" in reason:
+        parts.append(f"单组裕度不足（margin_min={result.margin_min:.2f}）")
+    if "low_margin" in reason:
+        parts.append(f"码字裕度不足（margin={result.margin:.2f}，需 ≥{result.margin_threshold:.1f}）")
+    if "invalid_payload" in reason:
+        parts.append("载荷不完整")
+
+    # 诊断尾巴：图片尺寸 + logo_scale，现场报障时最有用
+    diag = []
+    if input_size:
+        diag.append(f"图片 {int(input_size[0])}×{int(input_size[1])}")
+    if ls is not None:
+        diag.append(f"logo_scale={ls:.3f}")
+    if diag:
+        parts.append("〔" + "，".join(diag) + "〕")
+
+    if parts:
+        return "；".join(parts)
+    return AD.reason_text(reason)
+
+
 def result_payload(result: AD.DecodeResult, *,
                    include_candidate: bool = False,
-                   input_sha256: Optional[str] = None) -> dict:
+                   input_sha256: Optional[str] = None,
+                   input_size: Optional[tuple] = None) -> dict:
     """``DecodeResult.public_dict()`` plus Chinese ``reason_text``.
 
     ``candidate_digits`` is removed unless ``include_candidate``. Clients
@@ -210,9 +239,11 @@ def result_payload(result: AD.DecodeResult, *,
     flag and is true on many rejects.
     """
     body = result.public_dict()
-    body["reason_text"] = AD.reason_text(result.reason)
+    body["reason_text"] = _reason_text_with_numbers(result, input_size)
     # wx.uploadFile 直连分支会用这个字段核对"服务端收到的就是客户端发的"。
     body["input_sha256"] = input_sha256
+    if input_size:
+        body["input_size"] = [int(input_size[0]), int(input_size[1])]
     if not include_candidate:
         body.pop("candidate_digits", None)
     return body
@@ -249,6 +280,31 @@ def ensure_upload_size(nbytes: int) -> None:
         raise HTTPException(status_code=413, detail="image too large")
 
 
+def fetch_url_bytes(url: str) -> bytes:
+    """Fetch an image over http(s).
+
+    ``callContainer`` 的请求体有 100KB 硬上限（官方 FAQ 错误码 -606001），
+    所以客户端改成先把原图传到「对象存储」，再只把这个临时 URL 发过来。
+    这里只允许 http(s)、限时限量，避免被当成任意 URL 的代理。
+    """
+    if not url.lower().startswith(("https://", "http://")):
+        raise HTTPException(status_code=400, detail="url must be http(s)")
+    request = urllib.request.Request(
+        url, headers={"User-Agent": "arrow-decode/1.0"})
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            data = response.read(MAX_IMAGE_BYTES + 1)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"fetch failed: {exc}")
+    if len(data) > MAX_IMAGE_BYTES:
+        raise HTTPException(status_code=413, detail="image too large")
+    if not data:
+        raise HTTPException(status_code=400, detail="empty image")
+    return data
+
+
 def bytes_to_gray(data: bytes) -> np.ndarray:
     """Grayscale image, the same conversion as ``arrow_wm.imread_u``.
 
@@ -264,52 +320,6 @@ def bytes_to_gray(data: bytes) -> np.ndarray:
     if int(gray.size) > MAX_PIXELS:
         raise HTTPException(status_code=413, detail="image too large")
     return gray
-
-
-def image_wh(image: np.ndarray) -> tuple[int, int]:
-    """Width, height. An undecodable array is 0×0."""
-    if image is None or getattr(image, "ndim", 0) < 2 or image.size == 0:
-        return 0, 0
-    return int(image.shape[1]), int(image.shape[0])
-
-
-def cap_long_side(image: np.ndarray,
-                  max_long_side: int = DECODE_MAX_LONG_SIDE) -> tuple[np.ndarray, bool]:
-    """Downscale with ``INTER_AREA`` so the long side is exactly ``max_long_side``.
-
-    Aspect is preserved. Grayscale ``HxW`` and color ``HxWxC`` both work.
-    Images already at or under the cap, and empty arrays, are returned as-is.
-    """
-    width, height = image_wh(image)
-    long_side = max(width, height)
-    if long_side <= max_long_side or max_long_side < 1:
-        return image, False
-    if width >= height:
-        new_w = max_long_side
-        new_h = max(1, int(round(height * float(max_long_side) / float(width))))
-    else:
-        new_h = max_long_side
-        new_w = max(1, int(round(width * float(max_long_side) / float(height))))
-    resized = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_AREA)
-    return resized, True
-
-
-def prepare_decode_image(image: np.ndarray) -> np.ndarray:
-    """Cap the long side and log original / resized / final once.
-
-    Called from ``finish_decode`` after bytes become an array and before
-    ``arrow_decode``.
-    """
-    orig_w, orig_h = image_wh(image)
-    prepared, resized = cap_long_side(image)
-    final_w, final_h = image_wh(prepared)
-    logger.info(
-        "decode image original=%dx%d resized=%s final=%dx%d",
-        orig_w, orig_h,
-        "yes" if resized else "no",
-        final_w, final_h,
-    )
-    return prepared
 
 
 def media_type(content_type: str) -> str:
@@ -372,7 +382,7 @@ async def finish_decode(carrier: str, data: bytes, *,
     if not data:
         raise HTTPException(status_code=400, detail="empty image")
     ensure_upload_size(len(data))
-    gray = prepare_decode_image(bytes_to_gray(data))
+    gray = bytes_to_gray(data)
     try:
         result = await run_in_threadpool(decode_image, carrier, gray)
     except HTTPException:
@@ -382,7 +392,8 @@ async def finish_decode(carrier: str, data: bytes, *,
             {"status": "error", "detail": "decode error"}, status_code=500)
     return UTF8JSONResponse(
         result_payload(result, include_candidate=include_candidate,
-                       input_sha256=hashlib.sha256(data).hexdigest()))
+                       input_sha256=hashlib.sha256(data).hexdigest(),
+                       input_size=(gray.shape[1], gray.shape[0])))
 
 
 async def decode_json_body(request: Request, query_carrier: Optional[str], *,
@@ -402,6 +413,14 @@ async def decode_json_body(request: Request, query_carrier: Optional[str], *,
         if payload.get("carrier") is not None:
             raw_carrier = payload.get("carrier")
     chosen = carrier_from_value(None if raw_carrier is None else str(raw_carrier))
+    # 对象存储直链：客户端先 uploadFile，再只发这个临时 URL。
+    # 用来绕开 callContainer 的 100KB 请求体上限（-606001），
+    # 好处是原图不必压缩，服务端拿到的是完整分辨率。
+    remote = payload.get("url")
+    if isinstance(remote, str) and remote.strip():
+        data = await run_in_threadpool(fetch_url_bytes, remote.strip())
+        return await finish_decode(
+            chosen, data, include_candidate=include_candidate)
     image = payload.get("image_base64")
     if not isinstance(image, str):
         image = payload.get("image")
@@ -436,12 +455,27 @@ def select_upload(form) -> Optional[UploadFile]:
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    """先让 uvicorn 开始监听，再把解码器预热放到后台线程。
+
+    云托管的小实例（0.5 CPU）就绪探针在容器启动后约 2 秒就开始打 /health，
+    而 import cv2/numpy + 建两个解码器要好几秒。如果预热卡在 lifespan 里
+    （uvicorn 在 yield 之前不监听端口），探针会连续失败、实例一直不 Ready，
+    网关就返回 503。预热改成后台线程后，端口几乎立刻可用。
+    """
     carriers = _warmup_carriers()
-    for carrier in carriers:
-        print(f"[decode_api] loading {carrier} decoder", flush=True)
-        get_decoder(carrier)
+
+    def _warm() -> None:
+        for carrier in carriers:
+            print(f"[decode_api] loading {carrier} decoder", flush=True)
+            try:
+                get_decoder(carrier)
+            except Exception as exc:          # 预热失败不该拖死整个进程
+                print(f"[decode_api] warmup {carrier} failed: {exc!r}", flush=True)
+        if carriers:
+            print("[decode_api] ready", flush=True)
+
     if carriers:
-        print("[decode_api] ready", flush=True)
+        threading.Thread(target=_warm, name="warmup", daemon=True).start()
     yield
 
 

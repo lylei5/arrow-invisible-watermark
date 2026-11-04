@@ -699,6 +699,53 @@ class Decoder:
             detail = os.fspath(image) if isinstance(image, (str, os.PathLike)) else "empty array"
             return _unreadable(self.carrier, self.margin_threshold,
                                self.min_group_margin, self.cc_threshold, detail)
+        # 统一的输入尺寸上限：内孔解码要在矫正域上做 1440 射线 × 4 孔的法向扫描，
+        # 耗时随像素数近似线性增长。实测 1280×725（0.93 MP）本地就要 4.09 s，
+        # 云托管 0.5 CPU 上会放大到十几秒，直接撞网关超时（客户端只看到 102002）。
+        # 长边压到 900 后，22×6 mm 字标通常仍有 300+ px（logo_scale≈0.12，门槛 0.08），
+        # 而耗时回到 0.3 s 量级。本来就是紧凑裁剪的小图不受影响。
+        if (self.carrier == "inner" and loaded.ndim == 2
+                and loaded.shape[0] > 8 and loaded.shape[1] > 8):
+            _h0, _w0 = loaded.shape[:2]
+            _long0 = max(_w0, _h0)
+            if _long0 > 900:
+                _k0 = 900.0 / _long0
+                loaded = cv2.resize(
+                    loaded, (max(8, int(round(_w0 * _k0))),
+                             max(8, int(round(_h0 * _k0)))),
+                    interpolation=cv2.INTER_AREA)
+
+        # 近正方形输入的快路径：这类图几乎都是客户端把 22×6 mm 的长条塞进正方形
+        # 画布造成的（实测 1536×1536）。直接按印版比例还原后解一次——命中就直接
+        # 返回，省掉「先解一遍正方形、失败再解一遍」的双倍耗时（本地 4.0 s → 0.3 s，
+        # 云托管 0.5 CPU 上这一步正是 callContainer 15 s 超时的来源）。
+        if (self.carrier == "inner" and not return_debug and loaded.ndim == 2
+                and loaded.shape[0] > 8 and loaded.shape[1] > 8):
+            _h, _w = loaded.shape[:2]
+            if 0.85 <= _w / float(_h) <= 1.18:
+                _long = max(_w, _h)
+                _fixed = cv2.resize(
+                    loaded,
+                    (_long, max(8, int(round(_long * 600.0 / 2200.0)))),
+                    interpolation=cv2.INTER_AREA)
+                _raw = self._impl.decode(_fixed, return_debug=False)
+                if isinstance(_raw, dict) and _raw.get("crc_ok"):
+                    _res = apply_gate(
+                        _raw, carrier=self.carrier,
+                        margin_threshold=self.margin_threshold,
+                        min_group_margin=self.min_group_margin,
+                        cc_threshold=self.cc_threshold,
+                        allow_legacy_v2=self.allow_legacy_v2)
+                    if _res.accepted:
+                        return _res
+                # 还原后仍不行 → 说明它可能本来就是正方形构图，回落到原图，
+                # 但把长边压到 800 以锁住耗时：0.5 CPU 上 1280² 走完整候选搜索要几十秒。
+                if _long > 800:
+                    _k = 800.0 / _long
+                    loaded = cv2.resize(
+                        loaded, (max(8, int(round(_w * _k))),
+                                 max(8, int(round(_h * _k)))),
+                        interpolation=cv2.INTER_AREA)
         raw = self._impl.decode(loaded, return_debug=return_debug)
         if not isinstance(raw, dict):
             raw = {"ok": False, "reason": "decode_failed", "digits": None}
@@ -739,7 +786,9 @@ class Decoder:
                 raw2 = self._impl.decode(scaled, return_debug=False)
                 if not isinstance(raw2, dict):
                     continue
-                if raw2.get("layout_version") != 3 or not raw2.get("crc_ok"):
+                # 有 CRC 的版式都能进重试：v3/v4 都靠 crc_ok 裁决，写死 3
+                # 会让 v4（当前生产版式）的重试永远不生效。
+                if raw2.get("layout_version") not in (3, 4) or not raw2.get("crc_ok"):
                     continue
                 # 只允许重试「确认」首解已经读到的号码，不允许它另起一个新号码。
                 # CRC-7 的漏检率是 1/128，多解一次就多一次撞车机会；实测在
@@ -757,7 +806,7 @@ class Decoder:
         if (not result.accepted and not return_debug and plausibly_near
                 and dec_sigmas
                 and self.carrier == "inner"
-                and getattr(self, "inner_layout", None) in (3, "auto")):
+                and getattr(self, "inner_layout", None) in (3, 4)):
             import arrow_wm as _A
             for sigma in dec_sigmas:
                 sharp = _A.richardson_lucy(loaded, float(sigma),
@@ -765,7 +814,7 @@ class Decoder:
                 raw2 = self._impl.decode(sharp, return_debug=False)
                 if not isinstance(raw2, dict):
                     continue
-                if raw2.get("layout_version") != 3 or not raw2.get("crc_ok"):
+                if raw2.get("layout_version") not in (3, 4) or not raw2.get("crc_ok"):
                     continue
                 if first_candidate is not None and raw2.get("digits") != first_candidate:
                     continue

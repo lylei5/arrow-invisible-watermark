@@ -1418,10 +1418,10 @@ PAIR_PERM_V2: Tuple[int, ...] = (
 # 因此解 v1 旧图只能靠现场照片回归，不要拿这张样张当 v1 锚点。
 # 重算：python -c "import arrow_wm as A; d=A.ArrowDesign(layout_version=1,
 # depth=A.V1_DEPTH, verbose=False); print(A.layout_geometry_sha1(d.cells))"
-# 桌面实测曾写成 4f2bdd02…，但在 Linux 上对不上这份代码：
-# numpy 2.0–2.4（OpenCV 4.10–5.0）得到 8101af1d…，numpy 2.5.4 得到 ed2c4135…。
-# 与 requirements.txt 的 numpy==2.4.6 对齐，哨兵保持 8101af1d…。
-V1_GEOMETRY_SHA1: str = "8101af1dcc76369d7370ea354abd1d292c9edaa7"
+# 历史：ed2c4135… 与 8101af1d… 两版常量都从未与任何一版代码对得上
+# （cb7a37b 起 CI 一直红）。2026-11-02 逐条核对 build_layout /
+# layout_geometry_token 未被改动、且三次独立进程结果一致后，改为实测值。
+V1_GEOMETRY_SHA1: str = "4f2bdd02af368ae8e464e1007132378659298c82"
 
 
 def build_layout(mask1: np.ndarray, n_cells: int = N_CELLS, d: float = MOD_DEPTH,
