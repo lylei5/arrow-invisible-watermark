@@ -1,0 +1,59 @@
+{
+  "seed": 41000,
+  "n": 6,
+  "conditions": [
+    [
+      440,
+      0.8,
+      1200,
+      false
+    ],
+    [
+      330,
+      1.2,
+      1200,
+      false
+    ],
+    [
+      220,
+      1.2,
+      1200,
+      false
+    ],
+    [
+      330,
+      1.8,
+      1200,
+      false
+    ],
+    [
+      330,
+      1.2,
+      600,
+      false
+    ],
+    [
+      330,
+      1.2,
+      1200,
+      true
+    ]
+  ],
+  "methods": [
+    "legacy",
+    "reference",
+    "arc",
+    "arc_nuisance"
+  ],
+  "oracle": false,
+  "physical_mm": [
+    22,
+    6
+  ],
+  "camera_canvas": [
+    1000,
+    600
+  ],
+  "noise_sigma": 1.5,
+  "jpeg_quality": 85
+}

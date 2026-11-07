@@ -1,0 +1,6 @@
+# Extraction, plots and dimensioned print sheets. Runtime API dependencies
+# remain in services/decode_api/requirements.txt.
+Pillow>=9,<12
+matplotlib>=3.6,<4
+reportlab>=3.6,<5
+pypdf>=4,<7

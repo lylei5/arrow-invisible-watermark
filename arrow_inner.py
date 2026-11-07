@@ -374,9 +374,12 @@ class InnerCarrier:
         return self.design.render(self.solid_mask4())
 
     # ---------------- 嵌入 ----------------
+    def _encode_payload(self, digits: str) -> List[int]:
+        return encode_payload_v3(digits)
+
     def embed(self, digits: str) -> Dict:
         if self.layout_version in (LAYOUT_V3, LAYOUT_V4):
-            bits = encode_payload_v3(digits)
+            bits = self._encode_payload(digits)
             arranged = [0] * self.n_bits
             for b, pi in enumerate(self.pair_order):
                 arranged[pi] = bits[b]
@@ -664,6 +667,9 @@ class InnerDecoder:
                 "margin": 0.0, "cc": 0.0,
                 "layout_version": None, "crc_ok": None}
 
+    def _decode_payload(self, soft):
+        return decode_payload_v3_soft(soft)
+
     def decode_rectified(self, r: Dict, return_debug: bool = False) -> Dict:
         """在已矫正的画面上测量与判决。
 
@@ -683,7 +689,7 @@ class InnerDecoder:
                 [conf[pi] * (-1.0 if V4_SCRAMBLE[pi] else 1.0)
                  for pi in self.carrier.pair_order], np.float32)
             bits = [1 if c > 0 else 0 for c in conf_a]
-            digits, crc_ok, n_chg = decode_payload_v3_soft(conf_a)
+            digits, crc_ok, n_chg = self._decode_payload(conf_a)
             ms = A.group_codeword_margins(conf_a)
             margin = float(ms.mean()) if ms.size else 0.0
             return {"ok": True, "digits": digits,
@@ -706,7 +712,7 @@ class InnerDecoder:
             conf_a = np.array([dif[pi] for pi in self.carrier.pair_order],
                               np.float32)
             bits = [1 if c > 0 else 0 for c in conf_a]
-            digits, crc_ok, n_chg = decode_payload_v3_soft(conf_a)
+            digits, crc_ok, n_chg = self._decode_payload(conf_a)
             hard40, _, _ = A.hamming74_decode(bits)
             digits_hard = A.bits_to_payload(hard40[:37])
             ms = A.group_codeword_margins(conf_a)
@@ -917,12 +923,12 @@ def main(argv=None) -> int:
     ap.add_argument("--export", metavar="DIR", default=None, help="导出送印图到目录")
     ap.add_argument("--decode", nargs="+", metavar="IMG", default=None,
                     help="解码实拍照片")
-    ap.add_argument("--layout", choices=("2", "3", "auto"), default="auto",
-                    help="内孔版式：3=交织+CRC-7（新印版），2=旧印版，"
-                         "auto=解码时自动（压测/导出按 3）")
+    ap.add_argument("--layout", choices=("2", "3", "4", "auto"), default="4",
+                    help="内孔版式：4=NRZ（生产默认），3=交织差分，2=旧印版；"
+                         "auto 使用当前生产默认")
     args = ap.parse_args(argv)
 
-    make_layout = LAYOUT_V3 if args.layout == "auto" else int(args.layout)
+    make_layout = DEFAULT_LAYOUT if args.layout == "auto" else int(args.layout)
     carrier = InnerCarrier(depth=args.depth, verbose=True,
                            layout_version=make_layout)
     if args.bench:

@@ -1,0 +1,46 @@
+{
+  "format": "reference-arc-v1",
+  "checksum": "CRC-7/MMC",
+  "payload_bits": 37,
+  "code_bits": 77,
+  "physical_canvas_mm": [
+    22,
+    6
+  ],
+  "ink_width_mm": 20,
+  "depth_px": 8,
+  "depth_mm": 0.08,
+  "image_px": [
+    2200,
+    600
+  ],
+  "dpi": 2540,
+  "template_sha256": "10bc5f5aa3b0f63235e3c7e121e92cc758dea3382d632fc72fa4da27261bf201",
+  "plates": [
+    {
+      "digits": "13800138000",
+      "accepted": true,
+      "margin": 4.80713738871204,
+      "margin_min": 4.345981688596782,
+      "cc": 0.98802100530101,
+      "png_sha256": "10b2466f7044a53466a55d966e6f34506f2a7b45b61760bfaa83378ab055f095"
+    },
+    {
+      "digits": "13912345678",
+      "accepted": true,
+      "margin": 4.806090277140108,
+      "margin_min": 3.8506218703117967,
+      "cc": 0.9877516113484387,
+      "png_sha256": "15dd1a471d33db0d8522cf614599ecf5143c358a690987187abbb000c005b0a3"
+    },
+    {
+      "digits": "18600001234",
+      "accepted": true,
+      "margin": 4.650101499970557,
+      "margin_min": 4.045311518161442,
+      "cc": 0.9880917856475908,
+      "png_sha256": "3b181ac93b44a444239979487b038bfa1d87f27ec6bf662083a5ed46ce3223b2"
+    }
+  ],
+  "decoder": "python tools/reference_watermark.py decode PHOTO --format reference-arc-v1"
+}

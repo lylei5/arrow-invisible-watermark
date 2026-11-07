@@ -1,0 +1,32 @@
+{
+  "source_sha256": "818336b729c0703fe8c4d0226f96b22a5e135e3e241d573a363fe7834e00ecfd",
+  "source_size": [
+    1110,
+    570
+  ],
+  "roi_xyxy": [
+    223,
+    232,
+    931,
+    374
+  ],
+  "source_ink_size_px": [
+    708,
+    142
+  ],
+  "letters": 5,
+  "counters": 4,
+  "canvas_mm": [
+    22,
+    6
+  ],
+  "ink_width_mm": 20,
+  "ink_height_mm": 4.011299435028248,
+  "dpi": 2540,
+  "uncertainty": "Raster reconstruction; guide intersections and JPEG edges have approximately 1 source pixel uncertainty.",
+  "extraction": {
+    "gray_max_exclusive": 125,
+    "channel_max_exclusive": 130,
+    "gaussian_sigma_source_px": 0.8
+  }
+}

@@ -49,9 +49,9 @@ docs/DEPLOY.md             服务器部署：Docker + nginx + 证书
 | `status` | `accepted` / `rejected`（请求非法时才是 `error`，且 HTTP 非 200） |
 | `accepted` | 与 `status === "accepted"` 同一件事，**成功只认这个** |
 | `digits` | 采纳时的 11 位号码，拒绝时为 `null` |
-| `margin` / `margin_min` | 码字裕度均值 / 最弱一组；采纳线 `1.8` / `0.55` |
+| `margin` / `margin_min` | 码字裕度均值 / 最弱一组；内孔 v4 采纳线 `1.8` / `0.20` |
 | `cc` | 配准相关，采纳线 `0.85` |
-| `logo_scale` | 字标宽度占画面宽度的比例；低于 `0.08` 会以 `low_logo_scale` 拒绝 |
+| `logo_scale` | 照片中字标墨迹宽度（px）除以底版画幅宽度 2200；内孔低于 `0.08` 会拒绝 |
 | `reason` / `reason_text` | 机器可读 / 中文原因 |
 | `input_sha256` | 服务端实际收到的字节哈希 |
 
@@ -101,9 +101,24 @@ docker run -d --name arrow-decode --restart unless-stopped \
 | `PORT` | `8501` | 监听端口 |
 | `DECODE_TOKEN` | 空 | 非空时 `POST /decode` 校验 `X-Decode-Token`；`/health` 始终不校验 |
 | `DECODE_WARMUP` | `1` | 启动预热：`1` 全部 / `inner` / `edge` / `0` 不预热 |
-| `DECODE_INNER_LAYOUT` | `3` | 内孔版式（v4 生产版式） |
 | `WEB_CONCURRENCY` | `1` | worker 数；每个 worker 各持一套模板 |
 
 ## 许可与来源
 
-算法与模板来自 ARROW 隐形水印项目；本仓库只保留解码服务运行所需的代码。
+算法与模板来自 ARROW 隐形水印项目；本仓库包含解码服务和可复现的参考图案实验。
+
+## 参考图案与实验
+
+`assets/reference/` 是从原版设计截图重提取的字标，含物理尺寸为 22 × 6 mm 的 SVG、
+2540 dpi PNG 和提取参数。字标等比置于画幅内，墨迹约为 20 × 4.01 mm。
+`reference-arc-v1` 使用等弧长码元、跨内孔交织及 CRC-7/MMC；对应独立的参考母版与解码器。
+
+```bash
+python tools/reference_watermark.py export --out print-assets
+python tools/reference_watermark.py decode photograph.jpg
+python -m unittest discover -s tests
+python experiments/channel_review.py --out experiments/reproduce --n 24 --seed 81000 --methods legacy,reference,arc,arc_crc
+```
+
+生产 v4 可用 `python arrow_inner.py --layout 4 --export print-v4` 生成。
+实验结果及适用范围见 [方法审查](docs/REVIEW_2026-11-07.md)。

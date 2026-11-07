@@ -1,0 +1,46 @@
+{
+  "format": "reference-v4",
+  "checksum": "legacy-v4",
+  "payload_bits": 37,
+  "code_bits": 77,
+  "physical_canvas_mm": [
+    22,
+    6
+  ],
+  "ink_width_mm": 20,
+  "depth_px": 8,
+  "depth_mm": 0.08,
+  "image_px": [
+    2200,
+    600
+  ],
+  "dpi": 2540,
+  "template_sha256": "10bc5f5aa3b0f63235e3c7e121e92cc758dea3382d632fc72fa4da27261bf201",
+  "plates": [
+    {
+      "digits": "13800138000",
+      "accepted": true,
+      "margin": 4.996227352661547,
+      "margin_min": 4.195550439152713,
+      "cc": 0.9879208684005292,
+      "png_sha256": "3f39b927bdad26fb7f2aeb604a9c7ff6bd5927dc528eff07b005efdb915ce506"
+    },
+    {
+      "digits": "13912345678",
+      "accepted": true,
+      "margin": 4.911676669240147,
+      "margin_min": 3.357011722317449,
+      "cc": 0.9880830760617724,
+      "png_sha256": "0c1f25b60ab2b32b4ec53883e388bf6e7fbc9d51325d84ec397a634fe5c34629"
+    },
+    {
+      "digits": "18600001234",
+      "accepted": true,
+      "margin": 5.015408674128334,
+      "margin_min": 2.6522885717399087,
+      "cc": 0.9878326311384183,
+      "png_sha256": "0eb1963e8e8baba0fb6f7b4c92b56b0532d33a26f4cf49e8cbcb896092efd61a"
+    }
+  ],
+  "decoder": "python tools/reference_watermark.py decode PHOTO --format reference-v4"
+}

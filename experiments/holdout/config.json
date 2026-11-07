@@ -1,0 +1,65 @@
+{
+  "seed": 81000,
+  "n": 24,
+  "conditions": [
+    [
+      440,
+      0.8,
+      1200,
+      false
+    ],
+    [
+      330,
+      1.2,
+      1200,
+      false
+    ],
+    [
+      220,
+      1.2,
+      1200,
+      false
+    ],
+    [
+      330,
+      1.8,
+      1200,
+      false
+    ],
+    [
+      330,
+      1.2,
+      600,
+      false
+    ],
+    [
+      330,
+      1.2,
+      1200,
+      true
+    ]
+  ],
+  "methods": [
+    "legacy",
+    "reference",
+    "arc",
+    "arc_crc"
+  ],
+  "oracle": false,
+  "physical_mm": [
+    22,
+    6
+  ],
+  "camera_canvas": [
+    1000,
+    600
+  ],
+  "noise_sigma": 1.5,
+  "jpeg_quality": 85,
+  "file_sha256": {
+    "experiments/channel_review.py": "01f638c97822636d556ccee0016407993d93664cee7a594033a4f1aae6076577",
+    "arrow_arc.py": "77090374de7927e71b44ac90dc5f5a6a0a0c6a49545fa71cf5de9130052d80b4",
+    "arrow_inner.py": "475f7b16f2be49f31908ef90ae5aa2cd475bf84bea95c2e5b8fff15f716835b7",
+    "assets/reference/mask4.png": "10bc5f5aa3b0f63235e3c7e121e92cc758dea3382d632fc72fa4da27261bf201"
+  }
+}

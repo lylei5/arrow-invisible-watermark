@@ -1,0 +1,13 @@
+test_all_payload_one_and_two_bit_errors_are_detected (test_reference_format.CodecTests) ... ok
+test_crc_mmc_published_check (test_reference_format.CodecTests) ... ok
+test_legacy_checksum_compatibility (test_reference_format.CodecTests) ... ok
+test_soft_codec_corrects_one_error_per_hamming_group (test_reference_format.CodecTests) ... ok
+test_blind_clean_roundtrip_and_null_rejection (test_reference_format.GeometryTests) ... ok
+test_outer_contour_is_preserved (test_reference_format.GeometryTests) ... ok
+test_production_sample_still_decodes (test_reference_format.GeometryTests) ... ok
+test_topology_and_interleaving (test_reference_format.GeometryTests) ... ok
+
+----------------------------------------------------------------------
+Ran 8 tests in 3.208s
+
+OK

@@ -1,0 +1,67 @@
+{
+  "totals": {
+    "legacy": {
+      "n": 144,
+      "accepted_correct": 111,
+      "accepted_wrong": 0,
+      "negative_n": 144,
+      "false_accept": 0,
+      "cluster_bootstrap_95_ci": [
+        0.7083333333333334,
+        0.8333333333333334
+      ]
+    },
+    "reference": {
+      "n": 144,
+      "accepted_correct": 119,
+      "accepted_wrong": 0,
+      "negative_n": 144,
+      "false_accept": 0,
+      "cluster_bootstrap_95_ci": [
+        0.7569444444444445,
+        0.888888888888889
+      ]
+    },
+    "arc": {
+      "n": 144,
+      "accepted_correct": 136,
+      "accepted_wrong": 0,
+      "negative_n": 144,
+      "false_accept": 0,
+      "cluster_bootstrap_95_ci": [
+        0.9095486111111113,
+        0.9791666666666666
+      ]
+    },
+    "arc_crc": {
+      "n": 144,
+      "accepted_correct": 137,
+      "accepted_wrong": 0,
+      "negative_n": 144,
+      "false_accept": 0,
+      "cluster_bootstrap_95_ci": [
+        0.9236111111111112,
+        0.9791666666666666
+      ]
+    }
+  },
+  "paired_differences": {
+    "legacy": {
+      "difference": 0.18055555555555558,
+      "cluster_bootstrap_95_ci": [
+        0.11111111111111112,
+        0.25
+      ]
+    },
+    "reference": {
+      "difference": 0.125,
+      "cluster_bootstrap_95_ci": [
+        0.0625,
+        0.1875
+      ]
+    }
+  },
+  "bootstrap_unit": "payload, with all six capture conditions retained",
+  "bootstrap_repetitions": 10000,
+  "seed": 20261107
+}

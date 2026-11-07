@@ -1,0 +1,194 @@
+{
+  "legacy|w440_b0.8_dpi1200": {
+    "n": 12,
+    "correct": 6,
+    "accepted_correct": 6,
+    "accepted_wrong": 0,
+    "false_accept": 0,
+    "mean_ber": 0.0
+  },
+  "reference|w440_b0.8_dpi1200": {
+    "n": 12,
+    "correct": 5,
+    "accepted_correct": 5,
+    "accepted_wrong": 0,
+    "false_accept": 0,
+    "mean_ber": 0.03679653679653679
+  },
+  "arc|w440_b0.8_dpi1200": {
+    "n": 12,
+    "correct": 6,
+    "accepted_correct": 6,
+    "accepted_wrong": 0,
+    "false_accept": 0,
+    "mean_ber": 0.0
+  },
+  "arc_nuisance|w440_b0.8_dpi1200": {
+    "n": 12,
+    "correct": 6,
+    "accepted_correct": 6,
+    "accepted_wrong": 0,
+    "false_accept": 0,
+    "mean_ber": 0.0
+  },
+  "legacy|w330_b1.2_dpi1200": {
+    "n": 12,
+    "correct": 6,
+    "accepted_correct": 6,
+    "accepted_wrong": 0,
+    "false_accept": 0,
+    "mean_ber": 0.006493506493506493
+  },
+  "reference|w330_b1.2_dpi1200": {
+    "n": 12,
+    "correct": 6,
+    "accepted_correct": 5,
+    "accepted_wrong": 0,
+    "false_accept": 0,
+    "mean_ber": 0.0021645021645021645
+  },
+  "arc|w330_b1.2_dpi1200": {
+    "n": 12,
+    "correct": 6,
+    "accepted_correct": 6,
+    "accepted_wrong": 0,
+    "false_accept": 0,
+    "mean_ber": 0.008658008658008658
+  },
+  "arc_nuisance|w330_b1.2_dpi1200": {
+    "n": 12,
+    "correct": 6,
+    "accepted_correct": 6,
+    "accepted_wrong": 0,
+    "false_accept": 0,
+    "mean_ber": 0.01298701298701299
+  },
+  "legacy|w220_b1.2_dpi1200": {
+    "n": 12,
+    "correct": 5,
+    "accepted_correct": 4,
+    "accepted_wrong": 0,
+    "false_accept": 0,
+    "mean_ber": 0.04978354978354979
+  },
+  "reference|w220_b1.2_dpi1200": {
+    "n": 12,
+    "correct": 6,
+    "accepted_correct": 5,
+    "accepted_wrong": 0,
+    "false_accept": 0,
+    "mean_ber": 0.03463203463203463
+  },
+  "arc|w220_b1.2_dpi1200": {
+    "n": 12,
+    "correct": 5,
+    "accepted_correct": 5,
+    "accepted_wrong": 0,
+    "false_accept": 0,
+    "mean_ber": 0.03463203463203463
+  },
+  "arc_nuisance|w220_b1.2_dpi1200": {
+    "n": 12,
+    "correct": 3,
+    "accepted_correct": 2,
+    "accepted_wrong": 0,
+    "false_accept": 0,
+    "mean_ber": 0.0670995670995671
+  },
+  "legacy|w330_b1.8_dpi1200": {
+    "n": 12,
+    "correct": 5,
+    "accepted_correct": 5,
+    "accepted_wrong": 0,
+    "false_accept": 0,
+    "mean_ber": 0.043290043290043295
+  },
+  "reference|w330_b1.8_dpi1200": {
+    "n": 12,
+    "correct": 5,
+    "accepted_correct": 5,
+    "accepted_wrong": 0,
+    "false_accept": 0,
+    "mean_ber": 0.025974025974025972
+  },
+  "arc|w330_b1.8_dpi1200": {
+    "n": 12,
+    "correct": 6,
+    "accepted_correct": 6,
+    "accepted_wrong": 0,
+    "false_accept": 0,
+    "mean_ber": 0.021645021645021644
+  },
+  "arc_nuisance|w330_b1.8_dpi1200": {
+    "n": 12,
+    "correct": 4,
+    "accepted_correct": 4,
+    "accepted_wrong": 0,
+    "false_accept": 0,
+    "mean_ber": 0.04545454545454545
+  },
+  "legacy|w330_b1.2_dpi600": {
+    "n": 12,
+    "correct": 6,
+    "accepted_correct": 5,
+    "accepted_wrong": 0,
+    "false_accept": 0,
+    "mean_ber": 0.012987012987012986
+  },
+  "reference|w330_b1.2_dpi600": {
+    "n": 12,
+    "correct": 5,
+    "accepted_correct": 5,
+    "accepted_wrong": 0,
+    "false_accept": 0,
+    "mean_ber": 0.004329004329004329
+  },
+  "arc|w330_b1.2_dpi600": {
+    "n": 12,
+    "correct": 6,
+    "accepted_correct": 6,
+    "accepted_wrong": 0,
+    "false_accept": 0,
+    "mean_ber": 0.008658008658008658
+  },
+  "arc_nuisance|w330_b1.2_dpi600": {
+    "n": 12,
+    "correct": 6,
+    "accepted_correct": 6,
+    "accepted_wrong": 0,
+    "false_accept": 0,
+    "mean_ber": 0.021645021645021648
+  },
+  "legacy|w330_b1.2_dpi1200_local": {
+    "n": 12,
+    "correct": 4,
+    "accepted_correct": 2,
+    "accepted_wrong": 0,
+    "false_accept": 0,
+    "mean_ber": 0.07575757575757576
+  },
+  "reference|w330_b1.2_dpi1200_local": {
+    "n": 12,
+    "correct": 6,
+    "accepted_correct": 3,
+    "accepted_wrong": 0,
+    "false_accept": 0,
+    "mean_ber": 0.03463203463203463
+  },
+  "arc|w330_b1.2_dpi1200_local": {
+    "n": 12,
+    "correct": 6,
+    "accepted_correct": 6,
+    "accepted_wrong": 0,
+    "false_accept": 0,
+    "mean_ber": 0.03463203463203463
+  },
+  "arc_nuisance|w330_b1.2_dpi1200_local": {
+    "n": 12,
+    "correct": 5,
+    "accepted_correct": 5,
+    "accepted_wrong": 0,
+    "false_accept": 0,
+    "mean_ber": 0.04112554112554113
+  }
+}
