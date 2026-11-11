@@ -3,7 +3,7 @@
 
 用法：
     python tools/smoke_test.py --url http://127.0.0.1:8501/decode \
-        --image samples/inner/ARROW_13800138000.png --token "$DECODE_TOKEN"
+        --image samples/v5/ARROW_13800138000.png --token "$DECODE_TOKEN"
 
 成功条件：HTTP 200 且 accepted=true；带 --expect-digits 时还会核对号码。
 """
@@ -46,19 +46,17 @@ def main():
     parser.add_argument("--url", default="http://127.0.0.1:8501/decode")
     parser.add_argument("--image", required=True)
     parser.add_argument("--token", default=os.environ.get("DECODE_TOKEN", ""))
-    parser.add_argument("--carrier", default="inner", choices=["inner", "edge"])
     parser.add_argument("--expect-digits", default="13800138000")
     parser.add_argument("--timeout", type=float, default=120.0)
     args = parser.parse_args()
 
     body, content_type, payload = build_multipart(args.image)
     url = args.url
-    if "carrier=" not in url:
-        url += ("&" if "?" in url else "?") + "carrier=" + args.carrier
-
     request = urllib.request.Request(url, data=body, method="POST")
     request.add_header("Content-Type", content_type)
     request.add_header("X-Image-SHA256", hashlib.sha256(payload).hexdigest())
+    request.add_header("X-Arrow-Format", "arrow-vector-v5")
+    request.add_header("X-Verification-ID", uuid.uuid4().hex)
     if args.token:
         request.add_header("X-Decode-Token", args.token)
 

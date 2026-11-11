@@ -9,7 +9,6 @@ from pathlib import Path
 import json
 import cv2
 import numpy as np
-from PIL import Image
 import arrow_wm as A
 
 # Each contour begins with M, followed by L/C and an implicit closing edge.
@@ -79,9 +78,6 @@ def svg_text():
 class VectorDesign(A.ArrowDesign):
     def _rasterize(self):
         return mask(A.CANVAS_W*A.SS,A.CANVAS_H*A.SS)
-    def _build_cells(self):
-        # This master is intended for the inner-contour carrier.
-        self.cells=[]
     def _place_letters(self):
         return [(n,x*A.CANVAS_W/5) for n,x,_ in PLACEMENT]
     def _compute_letter_centroids(self):
@@ -93,6 +89,7 @@ class VectorDesign(A.ArrowDesign):
         return out
 
 def export(directory):
+    from PIL import Image
     d=Path(directory); d.mkdir(parents=True,exist_ok=True)
     (d/'ARROW_master.svg').write_text(svg_text(),encoding='utf-8')
     design=VectorDesign()

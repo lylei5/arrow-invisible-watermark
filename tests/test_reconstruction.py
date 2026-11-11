@@ -2,10 +2,9 @@ import unittest
 import cv2
 import numpy as np
 import arrow_wm as A
-import arrow_inner as I
 import arrow_v5 as V
 from arrow_vector import VectorDesign,PLACEMENT,svg_text
-from arrow_camera import install_thumbnail_locator,CameraDecoder
+from arrow_camera import install_thumbnail_locator
 
 class CodingTests(unittest.TestCase):
     def test_crc7_mmc_check_vector(self):
@@ -26,7 +25,7 @@ class CodingTests(unittest.TestCase):
             return r
         # Full 37-bit domain. Fixing suffix bits can restrict a checksum's
         # output image and is not a valid test of its total information rank.
-        for checksum in (I.crc7,V.crc7):
+        for checksum in (V.crc7,):
             columns=np.array([checksum(b) for b in np.eye(37,dtype=int)]).T
             self.assertEqual(binary_rank(columns),7)
 

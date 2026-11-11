@@ -11,10 +11,9 @@ import cv2
 import numpy as np
 from PIL import Image
 import arrow_wm as A
-import arrow_inner as I
-import arrow_decode as D
 import arrow_v5 as V
 from arrow_vector import VectorDesign
+from arrow_camera import install_thumbnail_locator
 
 PROFILES={
  'clean':dict(dpi=2540,width=1100,blur=0.,noise=0.,jpeg=100,tilt=0.),
@@ -85,7 +84,7 @@ def main():
     p=argparse.ArgumentParser()
     p.add_argument('--out',required=True);p.add_argument('--n',type=int,default=12)
     p.add_argument('--seed',type=int,default=82341)
-    p.add_argument('--methods',default='legacy,vector_v4,v5_angle,v5_arc')
+    p.add_argument('--methods',default='v5_angle')
     p.add_argument('--profiles',default=','.join(PROFILES))
     p.add_argument('--depth',type=float,default=8.)
     p.add_argument('--negative',action='store_true')
@@ -93,10 +92,12 @@ def main():
     out=Path(args.out);out.mkdir(parents=True,exist_ok=True)
     methods={};vector=VectorDesign()
     for name in args.methods.split(','):
-        if name=='legacy': c=I.InnerCarrier(A.ArrowDesign(),depth=args.depth)
-        elif name=='vector_v4':c=I.InnerCarrier(vector,depth=args.depth)
-        else:c=V.Carrier(vector,depth=args.depth,equal_arc=name=='v5_arc')
-        methods[name]=(c,V.Decoder(c) if name.startswith('v5') else I.InnerDecoder(c))
+        if name not in ('v5_angle', 'v5_arc'):
+            p.error('methods must be v5_angle or v5_arc')
+        c=V.Carrier(vector,depth=args.depth,equal_arc=name=='v5_arc')
+        decoder=V.Decoder(c)
+        install_thumbnail_locator(decoder._reg)
+        methods[name]=(c,decoder)
     payloads=A.make_payloads(args.n,args.seed);rows=[]
     (out/'manifest.json').write_text(json.dumps(dict(seed=args.seed,n=args.n,
       depth_px=args.depth,depth_mm=args.depth*.01,profiles={k:PROFILES[k] for k in args.profiles.split(',')},

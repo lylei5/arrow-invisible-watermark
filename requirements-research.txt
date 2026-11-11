@@ -1,6 +1,6 @@
-numpy
-opencv-python-headless
+-r services/decode_api/requirements.txt
 scipy
 Pillow
 reportlab
 matplotlib
+pypdf

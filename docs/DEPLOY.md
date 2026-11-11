@@ -1,122 +1,49 @@
-# 部署：Docker + nginx + Let's Encrypt
+# ARROW v5 部署
 
-线上实例（2026-11 起）：
-
-| 项 | 值 |
-|---|---|
-| 服务器 | 腾讯云轻量 `43.142.77.96`（Ubuntu 24.04，4C8G） |
-| 容器 | `arrow-decode`，镜像 `arrow-decode:20261104`，绑 `127.0.0.1:8601` |
-| 域名 | `arrow.liylei666.online`（A 记录指向服务器） |
-| 证书 | Let's Encrypt，certbot 自动续期 |
-
-同机还跑着景德镇 57-bit 陶瓷解码（`jingde.liylei666.online` → `127.0.0.1:8501`），
-两条服务用不同容器、不同端口、不同 token，互不影响。
-
-## 1. 构建镜像
+## 构建与运行
 
 ```bash
-# 在服务器上，仓库根目录
-docker build -t arrow-decode:$(date +%Y%m%d) .
-```
-
-Dockerfile 已把 Debian / PyPI 源换成腾讯云镜像；海外机器可改回官方源。
-
-国内服务器拉基础镜像可能被墙，可先走镜像再打 tag：
-
-```bash
-docker pull mirror.ccs.tencentyun.com/library/python:3.11-slim-bookworm
-docker tag mirror.ccs.tencentyun.com/library/python:3.11-slim-bookworm python:3.11-slim-bookworm
-```
-
-## 2. 运行容器
-
-token 只放在服务器上，不进仓库：
-
-```bash
-sudo install -d -m 700 /etc/arrow
-sudo sh -c 'printf "DECODE_TOKEN=%s\n" "$(python3 -c "import secrets;print(secrets.token_hex(32))")" > /etc/arrow/decoder.env'
-sudo chmod 600 /etc/arrow/decoder.env
-
-docker run -d --name arrow-decode --restart unless-stopped \
-  --cpus 2 --memory 3g --memory-swap 3g \
+docker build -t arrow-decode:v5 .
+sudo install -d -o 10001 -g 10001 -m 700 /opt/arrow/v5-data
+docker run -d --name arrow-decode-v5 --restart unless-stopped \
+  --cpus 1 --memory 2g --memory-swap 2g \
   --env-file /etc/arrow/decoder.env \
-  -p 127.0.0.1:8601:8501 \
+  -e ARROW_DB_PATH=/var/lib/arrow/verifications.sqlite3 \
+  -v /opt/arrow/v5-data:/var/lib/arrow \
+  -p 127.0.0.1:8603:8501 \
   --log-opt max-size=10m --log-opt max-file=3 \
-  arrow-decode:latest
+  arrow-decode:v5
 ```
 
-端口只绑 `127.0.0.1`，公网流量一律走 nginx。
+私有环境文件必须设置非空 `DECODE_TOKEN`，限制为管理员可读，禁止提交 Git。已有部署沿用现有令牌及数据库，不要因更新代码而生成新的计数数据库。以上命令适用于新实例；已有同名容器需按维护流程备份和替换。
 
-## 3. nginx 反代
+镜像使用用户 10001，数据库目录需要可写。默认单 worker；`WEB_CONCURRENCY` 可调整 worker 数，但每个 worker 都会加载模板。CPU 和内存约束应根据目标机器实测延迟及并发负载设置。
 
-`/etc/nginx/sites-available/arrow.liylei666.online`：
+## HTTPS 代理
+
+v5 对外路径为 `/v5/decode`，容器内部为 `/decode`。在已有域名的 HTTPS server 块内配置：
 
 ```nginx
-server {
-    listen 80;
-    listen [::]:80;
-    server_name arrow.liylei666.online;
-
-    client_max_body_size 25m;          # 服务端上限 20 MB，留余量
-
-    location / {
-        proxy_pass http://127.0.0.1:8601;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_read_timeout 120s;
-        proxy_send_timeout 120s;
-        proxy_connect_timeout 10s;
-    }
+location /v5/ {
+    client_max_body_size 21m;
+    proxy_pass http://127.0.0.1:8603/;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_read_timeout 120s;
 }
 ```
 
-```bash
-ln -s /etc/nginx/sites-available/arrow.liylei666.online /etc/nginx/sites-enabled/
-nginx -t && systemctl reload nginx
-```
+检查 `nginx -t` 后再 reload。保留同机其他服务的容器、端口、配置和数据目录。健康检查为 `/v5/health`，就绪时返回 `format=arrow-vector-v5` 和 `layout_version=5`。
 
-## 4. 证书
+## 小程序接入
 
-```bash
-apt install -y certbot python3-certbot-nginx
-certbot --nginx -d arrow.liylei666.online --redirect
-certbot renew --dry-run          # 验证自动续期
-```
+在微信后台的 request 和 uploadFile 合法域名中登记 HTTPS 域名。上传 `image` 字段，附带 README 列出的四个请求头。使用 v5 格式及母版标识校验返回值；网络重试沿用同一 `X-Verification-ID`，用户重新点击检测时创建新编号。
 
-云厂商防火墙需放行 TCP 80（HTTP-01 验证）和 443。
+本仓库提供解码和制版代码；小程序 AppID、私有连接配置及发布状态在独立项目中维护。更新 GitHub 不会自动部署服务或发布小程序。
 
-## 5. 验收
+## 数据与验收
 
-```bash
-curl -fsS https://arrow.liylei666.online/health
-python3 tools/smoke_test.py \
-  --url https://arrow.liylei666.online/decode \
-  --image samples/inner/ARROW_13800138000.png \
-  --token "$(sudo sed -n 's/^DECODE_TOKEN=//p' /etc/arrow/decoder.env)"
-```
+通过 SQLite backup API 备份运行中的数据库，保证 WAL 数据一致。替换容器后保留同一挂载路径，验证 `counting_since` 和计数连续性。计数历史包含编号及请求元数据，不保存上传照片。
 
-期望：`/health` 返回 `{"status":"ok"}`，解码返回 `accepted=true`、`digits=13800138000`；
-不带 token 返回 401，SHA 不符返回 422。
-
-## 6. 更新镜像
-
-```bash
-docker build -t arrow-decode:$(date +%Y%m%d) .
-docker rm -f arrow-decode
-# 重新 docker run（env-file 不变）
-```
-
-容器启动要加载 SIFT 模板，`/health` 大约 10–20 秒后才通（healthcheck start-period 120s）。
-
-## 7. 排障
-
-| 现象 | 查什么 |
-|---|---|
-| 502 | `docker ps` 容器是否在跑；`docker logs arrow-decode` |
-| 413 | nginx `client_max_body_size` 或服务端 20 MB 上限 |
-| 401 | `X-Decode-Token` 与 `/etc/arrow/decoder.env` 不一致 |
-| 一直 rejected / `low_logo_scale` | 字标宽度不到画面宽度 8%；让 Logo 占满画面重拍 |
-| 上传超时 | 原图较大；看 nginx `proxy_read_timeout` 与网络 |
+验收包括健康检查、已知样本成功解码、无码图拒绝、前导零保留、同一请求重试不增次、新请求增次、照片哈希及母版标识核对。手机端另需验证首开拍摄、重复拍摄、权限、裁剪几何和返回图像尺寸。

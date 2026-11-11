@@ -4,3 +4,16 @@ __pycache__/
 venv/
 .DS_Store
 *.log
+
+outputs/
+results/
+runtime/
+*.sqlite3*
+*.db
+.env
+.env.*
+*.pem
+*.key
+*.local.js
+project.private.config.json
+.ruff_cache/

@@ -1,109 +1,86 @@
-# ARROW 隐形水印解码服务
+# ARROW v5 隐形水印
 
-ARROW 字标（2200×600）里嵌了一组亚像素几何水印，写在 O / R / A 四个字的内孔轮廓上，
-字母外轮廓逐比特不变。这个仓库是**解码侧**的完整服务：FastAPI 包一层 HTTP，
-给小程序 / 客户端调用。
+本仓库提供 ARROW v5 矢量母版、内孔水印编码、手机照片解码、HTTP 服务和验证次数统计。默认入口、Docker 镜像和工具均使用 `arrow-vector-v5`。
 
-线上入口（自建服务器，2026-11 起）：
+样本画布为 **22 × 6 mm（2.2 × 0.6 cm）**，字标为 22 × 4.4 mm，上下各留白 0.8 mm。水印只改变 A、两个 R 和 O 的四个内孔轮廓；外轮廓保持不变，不添加定位条纹。母版依据设计图比例重新构建，曲线为人工几何重建，不是官方矢量原稿。
 
-```
-POST https://arrow.liylei666.online/decode   # multipart，字段 image
-GET  https://arrow.liylei666.online/health   # 存活探针，不鉴权
-```
+## 编码与解码
 
-## 目录
+- 业务编号：11 位十进制字符串，保留前导零，占 37 bit。
+- 完整性校验：CRC-7/MMC，37 + 7 = **44 位数据**。
+- 纠错：11 组 Hamming(7,4)，得到 **77 位编码**，对应 77 个内孔码元。
+- 布局：等角采样、按孔周长分配码元、跨孔交织；每组 7 位覆盖至少三个孔。
+- 嵌入：平滑径向位移，峰值 ±0.08 mm，固定异或加扰。
+- 拍照解码：缩略图定位，将单应矩阵映射回原图，在原始像素上矫正、测量边界，随后软判决、CRC 校验和质量门控。
 
-```
-arrow_decode.py            解码主流程（配准 → 采样 → 判决）
-arrow_wm.py                水印编解码 / 版式 / 模板定义
-arrow_inner.py             内孔载体的几何与模板
-ARROW_clean_pro.png        母版字标（SIFT 模板）
-services/decode_api/
-  app.py                   FastAPI：POST /decode、GET /health
-  requirements.txt         运行依赖（numpy / opencv-headless / fastapi / uvicorn）
-samples/inner/             一张可用于冒烟测试的内孔样张
-tools/smoke_test.py        命令行冒烟测试（只用标准库）
-Dockerfile                 容器镜像
-docs/DEPLOY.md             服务器部署：Docker + nginx + 证书
-```
+CRC 用于差错检测，不是密码学防伪；验证次数属于编号，不能单独证明实物唯一性。检测率、可见度和延迟仍需在实际印刷材料与手机上测量，仿真不能代替实物测试。
 
-## 接口
-
-### `POST /decode`
-
-| 位置 | 名字 | 必填 | 说明 |
-|---|---|---|---|
-| multipart | `image` | 是 | 照片。也接受 `file` / `img` / `photo` / `picture` |
-| 查询或表单 | `carrier` | 否 | `inner`（默认）或 `edge`。旧边缘印版才传 `edge` |
-| 头 | `X-Decode-Token` | 服务端设了 `DECODE_TOKEN` 时 | 与变量值一致 |
-| 头 | `X-Image-SHA256` | 否 | 客户端算的图片哈希；带上会回显并可用于核对 |
-
-也接受 `application/json` 的 `{"image_base64": "..."}` 和原始字节体（`application/octet-stream`）。
-
-### 响应
-
-解码本身（包括「这张图没有可信号码」）是 HTTP 200，`status` 只会是 `accepted` / `rejected`：
-
-| 字段 | 含义 |
-|---|---|
-| `status` | `accepted` / `rejected`（请求非法时才是 `error`，且 HTTP 非 200） |
-| `accepted` | 与 `status === "accepted"` 同一件事，**成功只认这个** |
-| `digits` | 采纳时的 11 位号码，拒绝时为 `null` |
-| `margin` / `margin_min` | 码字裕度均值 / 最弱一组；采纳线 `1.8` / `0.55` |
-| `cc` | 配准相关，采纳线 `0.85` |
-| `logo_scale` | 字标宽度占画面宽度的比例；低于 `0.08` 会以 `low_logo_scale` 拒绝 |
-| `reason` / `reason_text` | 机器可读 / 中文原因 |
-| `input_sha256` | 服务端实际收到的字节哈希 |
-
-不要用 `ok` 判断成功（无码图也会是 `true`），也不要构造 `digits` 之外的结果。
-
-请求不合法：`400`（缺字段 / 载体非法）、`401`（令牌不符）、`413`（超过 20 MB 或 4000 万像素）。
-上限：`MAX_IMAGE_BYTES = 20 MB`，`MAX_PIXELS = 40 MP`。
-
-### `GET /health`
-
-`{"status":"ok"}`，不校验 `X-Decode-Token`，给探针用。
-
-## 本地跑
+## 快速开始
 
 ```bash
-pip install -r services/decode_api/requirements.txt
+python -m pip install -r requirements-research.txt
+python tools/arrow_research.py master --out outputs/master
+python tools/arrow_research.py embed --digits 13800138000 --out outputs/ARROW_13800138000.png
+python tools/arrow_research.py decode --image samples/v5/ARROW_13800138000.png
+python tools/export_sample_sheet.py --out outputs/print-sheet
+```
+
+最后一条命令生成一页 72 个不同编号的 A4 PDF，每个样本均为 22 × 6 mm。打印选择“实际大小 / 100%”，关闭“适合页面”。PNG 母版为 2200 × 600 px，标记 2540 dpi。PDF 工具可用 `--font /path/to/chinese.ttf` 指定中文字体。
+
+## HTTP 服务
+
+```bash
+python -m pip install -r services/decode_api/requirements.txt
+export DECODE_TOKEN='replace-with-your-private-token'
+export ARROW_DB_PATH='./runtime/verifications.sqlite3'
 python -m uvicorn services.decode_api.app:app --host 127.0.0.1 --port 8501
 ```
 
-启动时加载 SIFT 模板，日志出现 `[decode_api] ready` 后 `/health` 才通。
+PowerShell 用 `$env:DECODE_TOKEN` 和 `$env:ARROW_DB_PATH` 设置对应环境变量。服务启动时执行已知样本自检；令牌必须配置。
 
-## 冒烟测试
+`GET /health` 返回就绪状态、格式、母版 SHA-256、布局版本和计数起始时间，无需认证。`POST /decode` 接受 multipart 的 `image` 字段，或 JPEG、PNG、WebP 的原始字节。
+
+| 请求头 | 要求 |
+| --- | --- |
+| `X-Decode-Token` | 与服务端私有令牌一致 |
+| `X-Arrow-Format` | `arrow-vector-v5` |
+| `X-Image-SHA256` | 实际上传图像字节的 SHA-256，64 位十六进制 |
+| `X-Verification-ID` | 一次检测的唯一编号，20–100 个字母、数字、下划线或连字符；同一照片的网络重试复用此编号 |
+
+成功必须以 `accepted === true` 为准。成功时返回 `digits`、`verification_count`、`verified_at`、`verification_replayed`；拒绝时 `digits` 和 `verification_count` 为 `null`。客户端还应核对 `format`、`master_id` 和 `input_sha256`。
+
+母版标识：`dc4bd045fb3c06204e32f41b548d30c0afc41403d4784bb3f2f18f331ad830a0`。
+
+质量门限为平均码字裕度 ≥ 1.8、最弱组裕度 ≥ 0.20、配准相关 ≥ 0.85、`logo_scale` ≥ 0.08。`logo_scale` 是照片内字标尺度相对于 2200 px 母版的比例，不是占整个画面的比例。
+
+请求错误包括 `400` 字段错误、`401` 认证失败、`409` 格式或请求编号冲突、`413` 超限、`415` 文件类型错误、`422` 哈希不一致或图像无效、`429` 解码繁忙、`503` 初始化或计数存储不可用。上限为 20 MiB 和 4000 万像素。每个 worker 同时只处理一次解码。
 
 ```bash
-python tools/smoke_test.py \
-  --url http://127.0.0.1:8501/decode \
-  --image samples/inner/ARROW_13800138000.png \
-  --token "$DECODE_TOKEN"
+python tools/smoke_test.py --url http://127.0.0.1:8501/decode --image samples/v5/ARROW_13800138000.png --expect-digits 13800138000
 ```
 
-期望 `accepted=true`、`digits=13800138000`。
+冒烟测试从 `DECODE_TOKEN` 环境变量读取令牌，自动计算哈希和生成请求编号。每次成功调用会增加该编号的验证次数。
 
-## 镜像
+## 测试与目录
 
 ```bash
-docker build -t arrow-decode:latest .
-docker run -d --name arrow-decode --restart unless-stopped \
-  -p 127.0.0.1:8601:8501 -e DECODE_TOKEN=... arrow-decode:latest
+python -m pip install -r requirements-dev.txt
+python -m unittest discover -s tests -v
 ```
 
-部署到公网（nginx 反代 + Let's Encrypt）见 [docs/DEPLOY.md](docs/DEPLOY.md)。
+| 路径 | 内容 |
+| --- | --- |
+| `arrow_vector.py` | 矢量字形、比例和物理尺寸 |
+| `arrow_v5.py` | CRC、交织、嵌入和软解码 |
+| `arrow_inner.py` | 内孔分配及径向测量 |
+| `arrow_wm.py` | 共用几何、Hamming 和配准函数 |
+| `arrow_camera.py` | 缩略图定位和坐标映射 |
+| `arrow_decode.py` | 质量门控和结果结构 |
+| `arrow_service.py` | v5 固定生产参数 |
+| `services/decode_api/` | 认证上传、健康检查、SQLite 验证计数 |
+| `tools/` | 样本生成、仿真、性能测试和接口测试 |
+| `samples/v5/` | 可直接解码的 v5 样本和母版 SVG |
 
-## 环境变量
+详见 [方法与评估](docs/RECONSTRUCTION.md)、[部署指南](docs/DEPLOY.md)、[v5 服务记录](docs/DEPLOYMENT.md) 和 [验证次数](docs/VERIFICATION_COUNTS.md)。
 
-| 变量 | 默认 | 说明 |
-|---|---|---|
-| `PORT` | `8501` | 监听端口 |
-| `DECODE_TOKEN` | 空 | 非空时 `POST /decode` 校验 `X-Decode-Token`；`/health` 始终不校验 |
-| `DECODE_WARMUP` | `1` | 启动预热：`1` 全部 / `inner` / `edge` / `0` 不预热 |
-| `DECODE_INNER_LAYOUT` | `3` | 内孔版式（v4 生产版式） |
-| `WEB_CONCURRENCY` | `1` | worker 数；每个 worker 各持一套模板 |
-
-## 许可与来源
-
-算法与模板来自 ARROW 隐形水印项目；本仓库只保留解码服务运行所需的代码。
+本次自动化结果见 [v5 验证记录](docs/VALIDATION.md)。

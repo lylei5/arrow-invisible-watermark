@@ -1,8 +1,7 @@
-"""Experimental v5 inner-contour watermark, explicitly selected by the caller.
+"""V5 inner-contour watermark.
 
 77 cells, 37 payload bits, proper CRC-7/MMC, Hamming(7,4), proportional
-cross-hole interleaving and optional equal-arclength windows. Legacy v4
-wire format and its production service are left compatible.
+cross-hole interleaving and optional equal-arclength research windows.
 """
 import cv2
 import numpy as np
@@ -41,7 +40,9 @@ class Carrier(I.InnerCarrier):
     def __init__(self,design=None,depth=8.,equal_arc=False,interleave=True):
         self.equal_arc=equal_arc
         self.interleave=interleave
-        super().__init__(design or VectorDesign(),depth=depth,layout_version=4)
+        super().__init__(design or VectorDesign(),depth=depth)
+        if not equal_arc:
+            return
         for h in self.holes:
             xy=np.stack([h['r_tab']*self.cos_t,h['r_tab']*self.sin_t],axis=1)
             # Smooth raster-derived radii only for the arclength clock. Geometry
@@ -91,8 +92,7 @@ class Decoder(I.InnerDecoder):
         return raw
 
 def gate(raw):
-    # Identical pre-registered gates to v4, including the v3/v4 .20 group gate.
-    return D.apply_gate(raw,min_group_margin=D.MIN_GROUP_MARGIN_V3)
+    return D.apply_gate(raw)
 
 if __name__=='__main__':
     import argparse,json
